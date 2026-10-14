@@ -1,6 +1,7 @@
 "use client";
 
-import { X } from "lucide-react";
+import { ArrowRight, X } from "lucide-react";
+import Link from "next/link";
 import {
   createContext,
   useCallback,
@@ -12,9 +13,11 @@ import {
   type ReactNode,
 } from "react";
 import {
+  canStartPlacementReview,
   formatDuration,
   formatDurationLong,
   getEligibility,
+  sceneWorkspacePath,
 } from "@/lib/catalogue/eligibility";
 import type { CatalogueTitle } from "@/lib/catalogue/types";
 import { StatusBadges } from "./status-badge";
@@ -129,6 +132,16 @@ function TitleRecordBody({
         </header>
 
         <EligibilityNote eligible={eligibility.eligible} reasons={eligibility.reasons} />
+
+        {canStartPlacementReview(title) && (
+          <Link
+            href={sceneWorkspacePath(title.id)}
+            className="inline-flex h-12 items-center gap-2 rounded-full bg-accent px-6 text-[0.9375rem] font-semibold text-canvas transition-colors hover:bg-accent-strong"
+          >
+            Start placement review
+            <ArrowRight aria-hidden="true" className="size-4" />
+          </Link>
+        )}
 
         <dl className="grid grid-cols-1 gap-x-8 gap-y-4 border-t border-line pt-6 text-sm sm:grid-cols-2">
           <Field label="Catalogue ID" value={title.id} />

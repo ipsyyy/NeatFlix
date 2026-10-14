@@ -35,6 +35,15 @@ export function getEligibility(title: CatalogueTitle): Eligibility {
   return { eligible: reasons.length === 0, reasons };
 }
 
+/** A placement review can start only for eligible, pipeline-enabled titles. */
+export function canStartPlacementReview(title: CatalogueTitle): boolean {
+  return title.pipelineEnabled && getEligibility(title).eligible;
+}
+
+export function sceneWorkspacePath(titleId: string): string {
+  return `/titles/${titleId}/scenes`;
+}
+
 export type CatalogueSummary = {
   total: number;
   eligible: number;

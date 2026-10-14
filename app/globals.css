@@ -139,6 +139,34 @@ body {
   outline-offset: 3px;
 }
 
+/* Workspace panels */
+.panel {
+  border: 1px solid var(--color-line);
+  border-radius: 1rem;
+  background: rgb(17 19 24 / 0.6);
+}
+.panel-heading {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+/* Scene candidate: the radio input is visually hidden, so focus shows on its card. */
+.candidate:has(:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+/* Rejected timeline segment: hatched so it reads without colour. */
+.timeline-rejected {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(238 154 154 / 0.55) 0 3px,
+    rgb(238 154 154 / 0.12) 3px 6px
+  );
+  box-shadow: inset 0 0 0 1px rgb(238 154 154 / 0.5);
+}
+
 /* Title record dialog */
 .title-record::backdrop {
   background: rgb(4 5 6 / 0.72);

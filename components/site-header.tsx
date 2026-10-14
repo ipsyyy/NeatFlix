@@ -1,29 +1,30 @@
 import { FlaskConical } from "lucide-react";
+import Link from "next/link";
 
 const sections = [
-  { href: "#featured", label: "Featured" },
-  { href: "#eligibility", label: "Eligibility" },
-  { href: "#titles", label: "All titles" },
+  { href: "/#featured", label: "Featured" },
+  { href: "/#eligibility", label: "Eligibility" },
+  { href: "/#titles", label: "All titles" },
 ];
 
 export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-canvas/75 backdrop-blur-xl">
       <div className="shell flex h-16 items-center gap-6">
-        <a href="#featured" className="flex shrink-0 items-center gap-2.5 rounded-md text-ink">
+        <Link href="/" className="flex shrink-0 items-center gap-2.5 rounded-md text-ink">
           <Wordmark />
-        </a>
+        </Link>
 
         <nav aria-label="Catalogue sections" className="hidden md:block">
           <ul className="flex items-center gap-1">
             {sections.map((s) => (
               <li key={s.href}>
-                <a
+                <Link
                   href={s.href}
                   className="rounded-full px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:bg-white/[0.06] hover:text-ink"
                 >
                   {s.label}
-                </a>
+                </Link>
               </li>
             ))}
           </ul>
