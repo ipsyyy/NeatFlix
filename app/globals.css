@@ -1,26 +1,189 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* NativeFrame tokens: projection-booth black, one tungsten accent. */
+@theme {
+  --color-canvas: #08090b;
+  --color-surface: #111318;
+  --color-raised: #1a1d23;
+  --color-ink: #eceef1;
+  --color-ink-soft: #d3d7de;
+  --color-muted: #a3a9b4;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.14);
+  --color-accent: #e8b04a;
+  --color-accent-strong: #f2c46c;
+  --color-blocked: #ee9a9a;
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Layout shell: 16px gutter on phones, widening with the viewport. */
+.shell {
+  margin-inline: auto;
+  width: 100%;
+  max-width: 1440px;
+  padding-inline: 1rem;
+}
+@media (min-width: 640px) {
+  .shell { padding-inline: 2rem; }
+}
+@media (min-width: 1024px) {
+  .shell { padding-inline: 3rem; }
+}
+
+/* Archivo width axis */
+.type-condensed { font-variation-settings: "wdth" 68; }
+.type-wide { font-variation-settings: "wdth" 118; }
+
+/* Focus: always visible for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* Film grain over placeholder artwork (original SVG noise). */
+.artwork-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Gate marks: corner crop marks plus a title-safe guide. */
+.gate-marks {
+  --gate-inset: 10px;
+  --gate-size: 18px;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(1.04);
+  transition: opacity 260ms ease, transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gate-marks--static {
+  --gate-inset: 0px;
+  --gate-size: 28px;
+  opacity: 1;
+  transform: none;
+}
+.gate-corner {
+  position: absolute;
+  width: var(--gate-size);
+  height: var(--gate-size);
+  border-color: var(--color-accent);
+  border-style: solid;
+  border-width: 0;
+}
+.gate-corner--tl { top: var(--gate-inset); left: var(--gate-inset); border-top-width: 2px; border-left-width: 2px; }
+.gate-corner--tr { top: var(--gate-inset); right: var(--gate-inset); border-top-width: 2px; border-right-width: 2px; }
+.gate-corner--bl { bottom: var(--gate-inset); left: var(--gate-inset); border-bottom-width: 2px; border-left-width: 2px; }
+.gate-corner--br { bottom: var(--gate-inset); right: var(--gate-inset); border-bottom-width: 2px; border-right-width: 2px; }
+.gate-safe {
+  position: absolute;
+  inset: 12%;
+  border: 1px dashed rgb(255 255 255 / 0.18);
+  border-radius: 2px;
+}
+.gate-marks--static .gate-safe { inset: 8% 6%; border-color: rgb(255 255 255 / 0.08); }
+
+/* Catalogue tile: the gate draws in and the artwork brightens on hover or keyboard focus. */
+.tile-frame {
+  box-shadow: 0 0 0 1px var(--color-line), 0 18px 40px -24px rgb(0 0 0 / 0.9);
+  transition: box-shadow 300ms ease, transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tile-art {
+  filter: saturate(0.85) brightness(0.9);
+  transition: filter 420ms ease, transform 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tile:hover .tile-frame,
+.tile:has(:focus-visible) .tile-frame {
+  transform: translateY(-4px);
+  box-shadow: 0 0 0 1px rgb(232 176 74 / 0.4), 0 28px 60px -28px rgb(0 0 0 / 1);
+}
+.tile:hover .tile-art,
+.tile:has(:focus-visible) .tile-art {
+  filter: saturate(1) brightness(1.05);
+  transform: scale(1.04);
+}
+.tile:hover .gate-marks,
+.tile:has(:focus-visible) .gate-marks {
+  opacity: 1;
+  transform: none;
+}
+/* The stretched button covers the card, so draw focus on the card frame instead. */
+.tile :focus-visible { outline: none; }
+.tile:has(:focus-visible) .tile-frame {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+/* Title record dialog */
+.title-record::backdrop {
+  background: rgb(4 5 6 / 0.72);
+  backdrop-filter: blur(6px);
+}
+.title-record[open] {
+  opacity: 1;
+  transform: none;
+  transition: opacity 220ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    overlay 320ms allow-discrete, display 320ms allow-discrete;
+}
+.title-record {
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+}
+@starting-style {
+  .title-record[open] {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+/* Featured reveal. Pure CSS so the server-rendered page is visible before hydration. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(18px); }
+}
+@keyframes settle {
+  from { opacity: 0; transform: scale(1.05); }
+}
+.reveal { animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.reveal-backdrop { animation: settle 1400ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.reveal-gate { animation: settle 900ms 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .reveal,
+  .reveal-backdrop,
+  .reveal-gate {
+    animation-delay: 0s !important;
+  }
+  .tile:hover .tile-frame,
+  .tile:has(:focus-visible) .tile-frame,
+  .tile:hover .tile-art,
+  .tile:has(:focus-visible) .tile-art,
+  .gate-marks {
+    transform: none;
+  }
 }
