@@ -4,7 +4,17 @@
  * Video binaries live in object storage; records hold URLs only.
  */
 
-export type Genre = "Comedy" | "Lifestyle";
+export type Genre =
+  | "Romance"
+  | "Romantic comedy"
+  | "Sports romance"
+  | "Workplace comedy"
+  | "Sports comedy"
+  | "Crime dramedy"
+  | "Fantasy satire"
+  | "Action thriller"
+  | "Survival thriller"
+  | "True crime";
 
 export type AudienceRating = "TV-G" | "TV-PG" | "TV-14" | "TV-MA";
 
@@ -13,6 +23,14 @@ export type RightsStatus = "cleared" | "pending-review" | "not-cleared";
 
 /** "unknown" means restrictions have not been confirmed, which is not the same as "none". */
 export type ActorRestrictionStatus = "none" | "restricted" | "unknown";
+
+/**
+ * Title-level tone and brand-safety assessment. A sensitive title must say
+ * why, so the rejection is evidence-backed (PRODUCT_SOURCE_OF_TRUTH.md §7.1).
+ */
+export type ContentSensitivity =
+  | { level: "standard" }
+  | { level: "sensitive"; reason: string };
 
 export type ProcessingStatus = "not-processed" | "processing" | "review-ready";
 
@@ -42,6 +60,7 @@ export type CatalogueTitle = {
   rating: AudienceRating;
   rightsStatus: RightsStatus;
   actorRestriction: ActorRestrictionStatus;
+  contentSensitivity: ContentSensitivity;
   processingStatus: ProcessingStatus;
   /** Runtime in seconds; must be between 180 and 300 (3–5 minutes). */
   durationSeconds: number;

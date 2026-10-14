@@ -33,7 +33,7 @@ The demonstration uses a fictional streaming company, fictional advertisers, syn
 The catalogue contains:
 
 - Ten shows, each represented by a 3–5 minute video
-- A mixture of light comedy and lifestyle-style content
+- A mixture of light comedy and romance titles suitable for placement, plus darker or higher-risk titles that exercise eligibility and brand-safety rejection
 - Ownership, genre, tone, rating, actor-restriction, and placement metadata
 - Three to five candidate scenes across the catalogue
 - One or two shows enabled for the complete generation workflow
@@ -42,6 +42,31 @@ The catalogue contains:
 The ten titles establish a believable streaming catalogue; they are not all processed through the expensive generation pipeline. Video binaries are stored in Supabase Storage or another approved object store, not committed directly to Git. The repository stores metadata, thumbnails, and asset URLs.
 
 Synthetic experiments and metrics must always be labelled as simulated. The demo must not imply real viewer or advertiser results.
+
+### Approved fictional catalogue
+
+1. The Early Sprung — warm workplace romance
+2. The Hate Hypothesis — witty academic romantic comedy
+3. Nearly — corporate investigation and action thriller
+4. Moster: The Lizzy Border Story — dark true-crime limited series
+5. Clue Girl — energetic collegiate sports romance
+6. The Gentlewoman — stylish crime dramedy
+7. Not Suitable for Professionals — playful young-professional workplace comedy
+8. Chat Powers — upbeat sports comedy
+9. Squid Gamed — intense survival competition thriller
+10. GOT: Game of Tones — grand fantasy satire
+
+The two pipeline-enabled titles are **The Hate Hypothesis** and **Not Suitable for Professionals**.
+
+**Moster: The Lizzy Border Story** and **Squid Gamed** must provide useful unsafe or sensitive-content rejection cases. They are ineligible for placement work because of sensitive tone or brand-safety risk, not merely because of missing metadata.
+
+### Catalogue asset and disclaimer rules
+
+- All thumbnails and videos must be original, synthetic, or properly licensed.
+- Do not copy original show thumbnails, actors, logos, signature costumes, or compositions.
+- The product must display this disclaimer visibly:
+
+  > Fictional demonstration catalogue. Not affiliated with any referenced show, studio, or streaming service.
 
 ## 4. Agent team
 

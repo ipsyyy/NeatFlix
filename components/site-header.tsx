@@ -32,7 +32,7 @@ export function SiteHeader() {
         <p className="ml-auto inline-flex items-center gap-2 rounded-full border border-line-strong px-3 py-1.5 text-xs font-medium text-ink-soft">
           <FlaskConical aria-hidden="true" className="size-3.5 text-accent" />
           <span>
-            Demo environment<span className="hidden sm:inline">, placeholder catalogue</span>
+            Demo environment<span className="hidden sm:inline">, fictional catalogue</span>
           </span>
         </p>
       </div>

@@ -1,16 +1,18 @@
 /**
  * NativeFrame catalogue — the single editable source for title content.
  *
- * TEMPORARY: these ten entries are placeholders. Titles, descriptions, and
- * metadata values will be replaced once the ten show concepts are decided.
- * Status values are varied only so every badge state is visible in the UI.
+ * The ten approved fictional titles (PRODUCT_SOURCE_OF_TRUTH.md §3).
+ * All metadata is fictional. Artwork is a temporary CSS placeholder until
+ * original, synthetic, or properly licensed thumbnails exist.
  */
 
+import { getEligibility } from "@/lib/catalogue/eligibility";
 import type { CatalogueTitle } from "@/lib/catalogue/types";
 
 const MIN_DURATION_SECONDS = 180;
 const MAX_DURATION_SECONDS = 300;
 const EXPECTED_TITLE_COUNT = 10;
+const MAX_PIPELINE_TITLES = 2;
 
 /** Fails the build if an edit breaks the catalogue rules in the spec (§3). */
 function defineCatalogue(titles: CatalogueTitle[]): readonly CatalogueTitle[] {
@@ -31,168 +33,199 @@ function defineCatalogue(titles: CatalogueTitle[]): readonly CatalogueTitle[] {
         `${t.id} runs ${t.durationSeconds}s; titles must run 3–5 minutes.`,
       );
     }
+    if (t.pipelineEnabled && !getEligibility(t).eligible) {
+      throw new Error(`${t.id} is pipeline enabled but not eligible for placement work.`);
+    }
+  }
+  const pipelineCount = titles.filter((t) => t.pipelineEnabled).length;
+  if (pipelineCount < 1 || pipelineCount > MAX_PIPELINE_TITLES) {
+    throw new Error(
+      `Catalogue must have 1–${MAX_PIPELINE_TITLES} pipeline-enabled titles; found ${pipelineCount}.`,
+    );
   }
   return Object.freeze(titles);
 }
 
 export const catalogue = defineCatalogue([
   {
-    id: "title-01",
-    title: "Catalogue Title 01",
+    id: "early-sprung",
+    title: "The Early Sprung",
     description:
-      "Placeholder entry. A light, everyday setting with a stable camera, reserved for the primary placement case.",
-    genre: "Comedy",
-    tone: "Light, warm",
+      "Two rival event planners fall for each other while organising their company's spring offsite.",
+    genre: "Romance",
+    tone: "Warm, gentle",
     rating: "TV-PG",
     rightsStatus: "cleared",
     actorRestriction: "none",
-    processingStatus: "review-ready",
-    durationSeconds: 252,
+    contentSensitivity: { level: "standard" },
+    processingStatus: "not-processed",
+    durationSeconds: 236,
     artwork: { kind: "placeholder", hues: [32, 205], focus: { x: 72, y: 34 } },
     videoUrl: null,
-    pipelineEnabled: true,
+    pipelineEnabled: false,
   },
   {
-    id: "title-02",
-    title: "Catalogue Title 02",
+    id: "hate-hypothesis",
+    title: "The Hate Hypothesis",
     description:
-      "Placeholder entry. Lifestyle format with long, steady shots of shared spaces.",
-    genre: "Lifestyle",
-    tone: "Relaxed, upbeat",
-    rating: "TV-G",
+      "A doctoral researcher sets out to prove her lab rival wrong about everything, including how she feels about him.",
+    genre: "Romantic comedy",
+    tone: "Witty, bright",
+    rating: "TV-PG",
     rightsStatus: "cleared",
     actorRestriction: "none",
+    contentSensitivity: { level: "standard" },
     processingStatus: "review-ready",
-    durationSeconds: 218,
+    durationSeconds: 248,
     artwork: { kind: "placeholder", hues: [168, 260], focus: { x: 28, y: 40 } },
     videoUrl: null,
     pipelineEnabled: true,
   },
   {
-    id: "title-03",
-    title: "Catalogue Title 03",
-    description: "Placeholder entry. Ensemble comedy set mostly indoors.",
-    genre: "Comedy",
-    tone: "Playful",
-    rating: "TV-PG",
-    rightsStatus: "cleared",
-    actorRestriction: "none",
-    processingStatus: "not-processed",
-    durationSeconds: 196,
-    artwork: { kind: "placeholder", hues: [345, 40], focus: { x: 60, y: 62 } },
-    videoUrl: null,
-    pipelineEnabled: false,
-  },
-  {
-    id: "title-04",
-    title: "Catalogue Title 04",
+    id: "nearly",
+    title: "Nearly",
     description:
-      "Placeholder entry. Usage rights are still being confirmed with the content owner.",
-    genre: "Lifestyle",
-    tone: "Calm, reflective",
-    rating: "TV-G",
-    rightsStatus: "pending-review",
-    actorRestriction: "unknown",
+      "A compliance analyst uncovers a cover-up and races across the city ahead of the people who buried it.",
+    genre: "Action thriller",
+    tone: "Tense, propulsive",
+    rating: "TV-14",
+    rightsStatus: "cleared",
+    actorRestriction: "restricted",
+    contentSensitivity: { level: "standard" },
     processingStatus: "not-processed",
-    durationSeconds: 274,
+    durationSeconds: 287,
     artwork: { kind: "placeholder", hues: [210, 290], focus: { x: 40, y: 25 } },
     videoUrl: null,
     pipelineEnabled: false,
   },
   {
-    id: "title-05",
-    title: "Catalogue Title 05",
+    id: "moster",
+    title: "Moster: The Lizzy Border Story",
     description:
-      "Placeholder entry. Rights are cleared, but a cast member has a placement restriction.",
-    genre: "Comedy",
-    tone: "Dry, observational",
-    rating: "TV-14",
+      "A dark limited series about a fictional 1890s family murder and the trial that divided a small town.",
+    genre: "True crime",
+    tone: "Dark, unsettling",
+    rating: "TV-MA",
     rightsStatus: "cleared",
-    actorRestriction: "restricted",
+    actorRestriction: "none",
+    contentSensitivity: {
+      level: "sensitive",
+      reason:
+        "Centres on a violent murder and its victims; a product placement would trivialise the subject and fails brand-safety review.",
+    },
     processingStatus: "not-processed",
-    durationSeconds: 233,
+    durationSeconds: 294,
+    artwork: { kind: "placeholder", hues: [345, 40], focus: { x: 60, y: 62 } },
+    videoUrl: null,
+    pipelineEnabled: false,
+  },
+  {
+    id: "clue-girl",
+    title: "Clue Girl",
+    description:
+      "A college softball captain and the team's new analytics student turn around a losing season and a rivalry.",
+    genre: "Sports romance",
+    tone: "Energetic, flirty",
+    rating: "TV-14",
+    rightsStatus: "pending-review",
+    actorRestriction: "none",
+    contentSensitivity: { level: "standard" },
+    processingStatus: "not-processed",
+    durationSeconds: 211,
     artwork: { kind: "placeholder", hues: [12, 320], focus: { x: 80, y: 70 } },
     videoUrl: null,
     pipelineEnabled: false,
   },
   {
-    id: "title-06",
-    title: "Catalogue Title 06",
-    description: "Placeholder entry. Short-form lifestyle segments in a home kitchen.",
-    genre: "Lifestyle",
-    tone: "Bright, practical",
-    rating: "TV-G",
+    id: "gentlewoman",
+    title: "The Gentlewoman",
+    description:
+      "A polished estate heir quietly runs the family's less-than-legal business between garden parties.",
+    genre: "Crime dramedy",
+    tone: "Stylish, sly",
+    rating: "TV-MA",
     rightsStatus: "cleared",
-    actorRestriction: "none",
+    actorRestriction: "unknown",
+    contentSensitivity: { level: "standard" },
     processingStatus: "processing",
-    durationSeconds: 187,
+    durationSeconds: 263,
     artwork: { kind: "placeholder", hues: [48, 140], focus: { x: 22, y: 68 } },
     videoUrl: null,
     pipelineEnabled: false,
   },
   {
-    id: "title-07",
-    title: "Catalogue Title 07",
+    id: "not-suitable-for-professionals",
+    title: "Not Suitable for Professionals",
     description:
-      "Placeholder entry. Third-party licence does not permit placement work.",
-    genre: "Comedy",
-    tone: "Sharp, fast-paced",
+      "Three first-year associates bluff their way through a chaotic open-plan office and a boss who loves the chaos.",
+    genre: "Workplace comedy",
+    tone: "Playful, irreverent",
     rating: "TV-14",
-    rightsStatus: "not-cleared",
+    rightsStatus: "cleared",
     actorRestriction: "none",
-    processingStatus: "not-processed",
-    durationSeconds: 291,
+    contentSensitivity: { level: "standard" },
+    processingStatus: "review-ready",
+    durationSeconds: 227,
     artwork: { kind: "placeholder", hues: [230, 190], focus: { x: 50, y: 30 } },
     videoUrl: null,
-    pipelineEnabled: false,
+    pipelineEnabled: true,
   },
   {
-    id: "title-08",
-    title: "Catalogue Title 08",
-    description: "Placeholder entry. Travel-style lifestyle episode with outdoor scenes.",
-    genre: "Lifestyle",
-    tone: "Easygoing",
+    id: "chat-powers",
+    title: "Chat Powers",
+    description:
+      "An underdog amateur hockey team, coached entirely by group chat, chases one respectable win.",
+    genre: "Sports comedy",
+    tone: "Upbeat, scrappy",
     rating: "TV-PG",
     rightsStatus: "cleared",
-    actorRestriction: "unknown",
+    actorRestriction: "none",
+    contentSensitivity: { level: "standard" },
     processingStatus: "not-processed",
-    durationSeconds: 262,
+    durationSeconds: 199,
     artwork: { kind: "placeholder", hues: [190, 28], focus: { x: 70, y: 55 } },
     videoUrl: null,
     pipelineEnabled: false,
   },
   {
-    id: "title-09",
-    title: "Catalogue Title 09",
-    description: "Placeholder entry. Workplace comedy with frequent wide shots.",
-    genre: "Comedy",
-    tone: "Light, awkward",
-    rating: "TV-PG",
+    id: "squid-gamed",
+    title: "Squid Gamed",
+    description:
+      "Desperate contestants enter a secretive competition where elimination has deadly consequences.",
+    genre: "Survival thriller",
+    tone: "Intense, violent",
+    rating: "TV-MA",
     rightsStatus: "cleared",
     actorRestriction: "none",
+    contentSensitivity: {
+      level: "sensitive",
+      reason:
+        "Lethal competition and graphic violence throughout; placing a consumer brand here creates unacceptable brand-safety risk.",
+    },
     processingStatus: "not-processed",
-    durationSeconds: 205,
+    durationSeconds: 276,
     artwork: { kind: "placeholder", hues: [275, 15], focus: { x: 35, y: 50 } },
     videoUrl: null,
     pipelineEnabled: false,
   },
   {
-    id: "title-10",
-    title: "Catalogue Title 10",
+    id: "game-of-tones",
+    title: "GOT: Game of Tones",
     description:
-      "Placeholder entry. Rights renewal is in review before placement work can begin.",
-    genre: "Lifestyle",
-    tone: "Gentle, cosy",
-    rating: "TV-G",
-    rightsStatus: "pending-review",
+      "Rival musical houses scheme, sing, and backstab their way toward a throne that may not be worth it.",
+    genre: "Fantasy satire",
+    tone: "Grand, irreverent",
+    rating: "TV-14",
+    rightsStatus: "not-cleared",
     actorRestriction: "none",
+    contentSensitivity: { level: "standard" },
     processingStatus: "not-processed",
-    durationSeconds: 240,
+    durationSeconds: 299,
     artwork: { kind: "placeholder", hues: [120, 200], focus: { x: 55, y: 75 } },
     videoUrl: null,
     pipelineEnabled: false,
   },
 ]);
 
-/** The title shown in the featured area. */
-export const FEATURED_TITLE_ID = "title-01";
+/** The title shown in the featured area: the primary pipeline-enabled title. */
+export const FEATURED_TITLE_ID = "hate-hypothesis";

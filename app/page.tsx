@@ -26,9 +26,13 @@ export default function CataloguePage() {
         </main>
       </TitleRecordProvider>
       <footer className="border-t border-line">
-        <p className="shell py-8 text-sm text-muted">
-          Fictional streaming company. Titles, metadata, and artwork are temporary placeholders.
-        </p>
+        <div className="shell space-y-1 py-8 text-sm">
+          <p className="text-ink-soft">
+            Fictional demonstration catalogue. Not affiliated with any referenced show, studio, or
+            streaming service.
+          </p>
+          <p className="text-muted">Artwork shown is a temporary original placeholder.</p>
+        </div>
       </footer>
     </>
   );

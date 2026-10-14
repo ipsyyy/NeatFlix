@@ -131,7 +131,11 @@ function TitleRecordBody({
           <Field label="Audience rating" value={title.rating} />
           <Field label="Rights" value={rightsLabel[title.rightsStatus]} />
           <Field label="Actor restrictions" value={actorLabel[title.actorRestriction]} />
-          <Field label="Processing" value={processingLabel[title.processingStatus]} />
+          <Field
+            label="Content sensitivity"
+            value={title.contentSensitivity.level === "sensitive" ? "Sensitive" : "Standard"}
+          />
+          <Field label="Processing"value={processingLabel[title.processingStatus]} />
           <Field
             label="Runtime"
             value={<time dateTime={`PT${title.durationSeconds}S`} title={formatDurationLong(title.durationSeconds)}>{formatDuration(title.durationSeconds)}</time>}
@@ -159,7 +163,8 @@ export function EligibilityNote({
     return (
       <p className="rounded-xl border border-accent/30 bg-accent/[0.07] px-4 py-3 text-sm text-ink-soft">
         <strong className="font-semibold text-accent">Eligible for placement work.</strong>{" "}
-        Rights are cleared and no actor restrictions are recorded.
+        Rights are cleared, no actor restrictions are recorded, and the content is not flagged as
+        sensitive.
       </p>
     );
   }

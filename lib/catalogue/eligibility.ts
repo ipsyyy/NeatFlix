@@ -8,7 +8,8 @@ export type Eligibility = {
 
 /**
  * Catalogue-level eligibility for placement work (PRODUCT_SOURCE_OF_TRUTH.md §4.1).
- * Unconfirmed information blocks eligibility rather than passing silently.
+ * Unconfirmed information blocks eligibility rather than passing silently,
+ * and sensitive tone or brand-safety risk blocks it even when metadata is complete.
  * Audience eligibility (adults, ad-supported) is applied per viewer later,
  * not per title, so rating is not a gate here.
  */
@@ -25,6 +26,10 @@ export function getEligibility(title: CatalogueTitle): Eligibility {
     reasons.push("A cast member has a placement restriction.");
   } else if (title.actorRestriction === "unknown") {
     reasons.push("Actor restrictions have not been confirmed.");
+  }
+
+  if (title.contentSensitivity.level === "sensitive") {
+    reasons.push(title.contentSensitivity.reason);
   }
 
   return { eligible: reasons.length === 0, reasons };

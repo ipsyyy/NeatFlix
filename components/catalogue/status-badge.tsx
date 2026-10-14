@@ -5,6 +5,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   ShieldX,
+  TriangleAlert,
   UserRoundSearch,
   UserX,
   Workflow,
@@ -35,6 +36,13 @@ const actorBadge: Record<CatalogueTitle["actorRestriction"], BadgeSpec | null> =
   unknown: { key: "actor", label: "Actor check needed", icon: UserRoundSearch, tone: "caution" },
 };
 
+const sensitiveBadge: BadgeSpec = {
+  key: "sensitivity",
+  label: "Sensitive content",
+  icon: TriangleAlert,
+  tone: "blocked",
+};
+
 const processingBadge: Record<CatalogueTitle["processingStatus"], BadgeSpec> = {
   "review-ready": { key: "processing", label: "Review ready", icon: CircleCheck, tone: "positive" },
   processing: { key: "processing", label: "Processing", icon: LoaderCircle, tone: "neutral" },
@@ -48,11 +56,12 @@ const pipelineBadge: BadgeSpec = {
   tone: "positive",
 };
 
-/** Operational badges in a fixed order: rights, actor, processing, pipeline. */
+/** Operational badges in a fixed order: rights, actor, sensitivity, processing, pipeline. */
 export function getStatusBadges(title: CatalogueTitle): BadgeSpec[] {
   return [
     rightsBadge[title.rightsStatus],
     actorBadge[title.actorRestriction],
+    title.contentSensitivity.level === "sensitive" ? sensitiveBadge : null,
     processingBadge[title.processingStatus],
     title.pipelineEnabled ? pipelineBadge : null,
   ].filter((b): b is BadgeSpec => b !== null);
