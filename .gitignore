@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# video binaries (store in object storage, not Git)
+*.mp4
+*.mov
+*.webm
