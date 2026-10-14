@@ -300,7 +300,8 @@ Masky gives every agent a distinct face, personality, and voice. Voice is used s
 ### Agent system
 
 - Five separately registered BAND agents
-- Python agent workers hosted on Railway for persistent connections
+- TypeScript agent workers using the official BAND SDK (`@band-ai/sdk`), hosted on Railway for persistent connections
+- Anthropic Claude for agent reasoning and structured handoff decisions; Gemini remains limited to scene understanding and media-prompt generation
 - Structured input and output schemas for every handoff
 - BAND rooms, `@mentions`, shared case IDs, events, and veto flow
 
