@@ -73,7 +73,10 @@ export function validateHandoff(input: unknown): ValidationResult<HandoffEnvelop
     "caseId", "artifactId", "senderRole", "recipientRole", "decision", "evidence",
     "confidence", "assumptions", "blockers", "nextAction", "timestamp",
   ]);
-  for (const key of Object.keys(h)) if (!allowed.has(key)) errors.push(`Unknown field: ${key}`);
+  for (const key of Object.keys(h)) {
+    // Field names are attacker-controlled; bound them before they reach any log.
+    if (!allowed.has(key)) errors.push(`Unknown field: ${key.replace(/[^\w-]/g, "?").slice(0, 40)}`);
+  }
 
   if (!isNonEmptyString(h.caseId, 100)) errors.push("caseId must be a non-empty string.");
   if (!isNonEmptyString(h.artifactId, 200)) errors.push("artifactId must be a non-empty string.");

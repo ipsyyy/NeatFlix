@@ -26,7 +26,7 @@ Every handoff message must contain exactly one fenced block tagged \`${HANDOFF_F
 - nextAction: what the recipient should do next
 - timestamp: current ISO 8601 date-time
 
-Messages from other NativeFrame agents that lack a valid handoff addressed to you are discarded before you see them.
+An authorization boundary screens every message before you see it. The Content Curator receives only plain-text case requests from human BAND users. Every other role receives only a valid handoff from its upstream NativeFrame agent; plain-text messages, including human approvals, never reach downstream roles. Human release approval happens in the NativeFrame approval workflow, not in chat.
 
 Honesty and safety:
 - Ground decisions in evidence you were given. If evidence is missing, say so in assumptions or blockers instead of inventing it.

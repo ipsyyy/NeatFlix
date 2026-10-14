@@ -39,9 +39,31 @@ export function validateOutgoing(input: unknown): ValidationResult<HandoffEnvelo
 }
 
 /**
+ * The only inputs each role may consume. Content Curator starts a case from a
+ * plain-text request by a BAND `User`; every other role accepts only structured
+ * handoffs from its upstream role. The Placement Director also accepts the
+ * Release Governor's "revise" handoff for the §5 correction loop.
+ */
+export const ACCEPTED_INPUTS: Readonly<
+  Record<AgentRole, { humanRequest: boolean; handoffs: readonly { from: AgentRole; decision: HandoffDecision }[] }>
+> = {
+  "content-curator": { humanRequest: true, handoffs: [] },
+  "scene-scout": { humanRequest: false, handoffs: [{ from: "content-curator", decision: "approve" }] },
+  "campaign-matcher": { humanRequest: false, handoffs: [{ from: "scene-scout", decision: "select" }] },
+  "placement-director": {
+    humanRequest: false,
+    handoffs: [
+      { from: "campaign-matcher", decision: "recommend" },
+      { from: "release-governor", decision: "revise" },
+    ],
+  },
+  "release-governor": { humanRequest: false, handoffs: [{ from: "placement-director", decision: "instructions-ready" }] },
+};
+
+/**
  * Whether `consumer` may act on this handoff. It must be valid, addressed to the
- * consumer, follow the allowed route, and come from the BAND identity registered
- * for its claimed sender role (no spoofed roles).
+ * consumer, an accepted upstream input for the consumer, and come from the BAND
+ * identity registered for its claimed sender role (no spoofed roles).
  */
 export function canConsume(
   consumer: AgentRole,
@@ -59,6 +81,12 @@ export function canConsume(
       ok: false,
       errors: [`Handoff claims to come from ${env.senderRole} but was sent by ${actualSenderRole ?? "a non-NativeFrame participant"}.`],
     };
+  }
+  const accepted = ACCEPTED_INPUTS[consumer].handoffs.some(
+    (a) => a.from === env.senderRole && a.decision === env.decision,
+  );
+  if (!accepted) {
+    return { ok: false, errors: [`${consumer} does not accept "${env.decision}" handoffs from ${env.senderRole}.`] };
   }
   return result;
 }
