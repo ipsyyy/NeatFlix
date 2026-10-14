@@ -2,10 +2,10 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { NoSceneCandidates } from "@/components/scenes/no-scene-candidates";
 import { SceneWorkspace } from "@/components/scenes/scene-workspace";
-import { WorkspaceHeader } from "@/components/scenes/workspace-header";
+import { WorkspaceHeader } from "@/components/workflow/workspace-header";
 import { catalogue } from "@/data/catalogue";
 import { getSceneReview } from "@/data/scene-candidates";
-import { canStartPlacementReview } from "@/lib/catalogue/eligibility";
+import { canStartPlacementReview, formatDuration } from "@/lib/catalogue/eligibility";
 
 /** Only eligible, pipeline-enabled titles have a scene workspace. */
 export async function generateStaticParams() {
@@ -36,7 +36,23 @@ export default async function SceneWorkspacePage({
 
   return (
     <main id="main" tabIndex={-1} className="flex-1 outline-none">
-      <WorkspaceHeader title={title} caseId={review?.caseId ?? null} />
+      <WorkspaceHeader
+        title={title}
+        stage="Scene selection"
+        back={{ href: "/#titles", label: "Back to catalogue" }}
+        context={[
+          { label: "Case", value: review?.caseId ?? "Not opened" },
+          { label: "Runtime", value: formatDuration(title.durationSeconds) },
+          { label: "Genre", value: title.genre },
+          { label: "Rating", value: title.rating },
+        ]}
+        fixtureNote={
+          <>
+            <strong className="font-semibold text-ink">Demo fixtures.</strong> Scene records on
+            this page are hand-authored stand-ins until real scene analysis is connected.
+          </>
+        }
+      />
       {review ? (
         <SceneWorkspace title={title} review={review} />
       ) : (

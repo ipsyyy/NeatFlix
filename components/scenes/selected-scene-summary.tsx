@@ -1,16 +1,21 @@
-import { Lock } from "lucide-react";
+import { ArrowRight, Lock } from "lucide-react";
+import Link from "next/link";
 import { decisionLabel, formatTimecode, guardrailLabel, outcomeLabel } from "@/lib/scenes/format";
 import type { SceneCandidate } from "@/lib/scenes/types";
+import { campaignWorkspacePath, canProceedToCampaignMatching } from "@/lib/scenes/workflow";
 
 export function SelectedSceneSummary({
+  titleId,
   caseId,
   scene,
   className = "",
 }: {
+  titleId: string;
   caseId: string;
   scene: SceneCandidate;
   className?: string;
 }) {
+  const canContinue = canProceedToCampaignMatching(scene);
   const length = scene.endSeconds - scene.startSeconds;
   const openItems = scene.checks.filter((c) => c.outcome === "caution" || c.outcome === "not-assessed");
   const timecode = `${formatTimecode(scene.startSeconds)}–${formatTimecode(scene.endSeconds)}`;
@@ -60,18 +65,30 @@ export function SelectedSceneSummary({
       </div>
 
       <div className="mt-5 border-t border-line pt-4">
-        <button
-          type="button"
-          disabled
-          aria-describedby="next-step-note"
-          className="inline-flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-full border border-line-strong bg-white/[0.04] px-5 text-[0.9375rem] font-semibold text-muted"
-        >
-          <Lock aria-hidden="true" className="size-4" />
-          Continue to campaign matching
-        </button>
-        <p id="next-step-note" className="mt-2 text-center text-xs text-muted">
-          Coming in a later build. Campaign matching isn&rsquo;t available yet.
-        </p>
+        {canContinue ? (
+          <Link
+            href={campaignWorkspacePath(titleId, scene.id)}
+            className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-full bg-accent px-5 text-[0.9375rem] font-semibold text-canvas transition-colors hover:bg-accent-strong"
+          >
+            Continue to campaign matching
+            <ArrowRight aria-hidden="true" className="size-4" />
+          </Link>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled
+              aria-describedby="next-step-note"
+              className="inline-flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-full border border-line-strong bg-white/[0.04] px-5 text-[0.9375rem] font-semibold text-muted"
+            >
+              <Lock aria-hidden="true" className="size-4" />
+              Continue to campaign matching
+            </button>
+            <p id="next-step-note" className="mt-2 text-center text-xs text-muted">
+              Every scene guardrail must pass first. Resolve the open items above.
+            </p>
+          </>
+        )}
       </div>
     </section>
   );

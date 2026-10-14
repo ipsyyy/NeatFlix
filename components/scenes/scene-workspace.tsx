@@ -46,6 +46,7 @@ export function SceneWorkspace({
       <EvidencePanel className="lg:col-start-1 lg:row-start-2" title={title} scene={selected} />
       <SelectedSceneSummary
         className="lg:col-start-2 lg:row-start-2"
+        titleId={title.id}
         caseId={review.caseId}
         scene={selected}
       />

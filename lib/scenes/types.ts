@@ -23,6 +23,9 @@ export type GuardrailCheck = {
 
 export type SceneDecision = "recommended" | "acceptable" | "rejected";
 
+/** Everyday objects a scene could hold naturally; campaigns match against these. */
+export type PlacementObject = "Coffee cup" | "Phone" | "Laptop" | "Beverage" | "Food bag";
+
 export type SceneCandidate = {
   id: string;
   name: string;
@@ -37,7 +40,7 @@ export type SceneCandidate = {
   camera: string;
   surface: string;
   /** Objects that could sit naturally in the scene. Empty when none. */
-  opportunities: string[];
+  opportunities: PlacementObject[];
   checks: GuardrailCheck[];
 };
 
