@@ -31,7 +31,7 @@ export default function CataloguePage() {
             Fictional demonstration catalogue. Not affiliated with any referenced show, studio, or
             streaming service.
           </p>
-          <p className="text-muted">Artwork shown is a temporary original placeholder.</p>
+          <p className="text-muted">All artwork is original. Titles without finished artwork show a temporary placeholder.</p>
         </div>
       </footer>
     </>

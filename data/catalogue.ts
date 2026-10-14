@@ -77,7 +77,14 @@ export const catalogue = defineCatalogue([
     contentSensitivity: { level: "standard" },
     processingStatus: "review-ready",
     durationSeconds: 248,
-    artwork: { kind: "placeholder", hues: [168, 260], focus: { x: 28, y: 40 } },
+    artwork: {
+      kind: "image",
+      src: "/artwork/the-hate-hypothesis-hero.png",
+      alt: "Two researchers debate over an open notebook in a night-time laboratory.",
+      fallback: { kind: "placeholder", hues: [168, 260], focus: { x: 28, y: 40 } },
+      // Subjects sit right of centre with faces in the upper third.
+      position: { wide: "70% 28%", tall: "74% 25%" },
+    },
     videoUrl: null,
     pipelineEnabled: true,
   },

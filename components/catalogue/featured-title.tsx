@@ -22,9 +22,19 @@ export function FeaturedTitle({ title }: { title: CatalogueTitle }) {
       className="relative isolate overflow-hidden border-b border-line"
     >
       <div className="reveal-backdrop absolute inset-0 -z-10">
-        <TitleArtwork artwork={title.artwork} title={title.title} decorative className="absolute inset-0" />
-        {/* Scrims keep text contrast high over any artwork. */}
-        <div className="absolute inset-0 bg-gradient-to-r from-canvas via-canvas/75 to-transparent" />
+        <TitleArtwork
+          artwork={title.artwork}
+          title={title.title}
+          decorative
+          fit="responsive"
+          eager
+          sizes="100vw"
+          className="absolute inset-0"
+        />
+        {/* Scrims keep text contrast high. Mobile: artwork shows above the text, fading out
+            behind it. Desktop: the left side darkens for text, subjects stay clear on the right. */}
+        <div className="absolute inset-0 bg-gradient-to-b from-canvas/40 from-0% via-canvas/85 via-45% to-canvas to-65% md:hidden" />
+        <div className="absolute inset-0 hidden bg-gradient-to-r from-canvas from-10% via-canvas/70 via-40% to-transparent to-65% md:block" />
         <div className="absolute inset-0 bg-gradient-to-t from-canvas via-transparent to-canvas/30" />
       </div>
 
@@ -32,7 +42,7 @@ export function FeaturedTitle({ title }: { title: CatalogueTitle }) {
         <GateMarks always />
       </div>
 
-      <div className="shell relative flex min-h-[min(78svh,46rem)] flex-col justify-end pb-14 pt-32 sm:pb-20 lg:pb-24">
+      <div className="shell relative flex min-h-[min(78svh,46rem)] flex-col justify-end pb-14 pt-[min(68vw,22rem)] sm:pb-20 md:pt-32 lg:pb-24">
         <p className="reveal text-[0.9375rem] text-ink-soft" style={step(0)}>
           Featured for placement review
         </p>

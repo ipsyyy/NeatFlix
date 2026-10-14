@@ -100,7 +100,13 @@ function TitleRecordBody({
   return (
     <article>
       <div className="relative aspect-[21/9] overflow-hidden">
-        <TitleArtwork artwork={title.artwork} title={title.title} decorative className="absolute inset-0" />
+        <TitleArtwork
+          artwork={title.artwork}
+          title={title.title}
+          decorative
+          sizes="(min-width: 768px) 44rem, 100vw"
+          className="absolute inset-0"
+        />
         <GateMarks always />
         <button
           type="button"
@@ -144,7 +150,7 @@ function TitleRecordBody({
           <Field label="Video" value={title.videoUrl ?? "Not uploaded yet"} />
           <Field
             label="Artwork"
-            value={title.artwork.kind === "placeholder" ? "Placeholder artwork" : title.artwork.src}
+            value={title.artwork.kind === "placeholder" ? "Placeholder artwork" : "Original artwork"}
           />
         </dl>
       </div>

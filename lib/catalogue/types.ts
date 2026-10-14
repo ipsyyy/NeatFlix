@@ -45,8 +45,17 @@ export type PlaceholderArtwork = {
 
 export type ImageArtwork = {
   kind: "image";
+  /** Path under /public, e.g. "/artwork/title-hero.png". */
   src: string;
   alt: string;
+  /** Painted beneath the image, and shown alone if the image fails to load. */
+  fallback: PlaceholderArtwork;
+  /**
+   * CSS object-position values that keep the subjects in view.
+   * "wide" is for landscape frames (cards, dialog, desktop hero);
+   * "tall" is for the portrait mobile hero.
+   */
+  position: { wide: string; tall: string };
 };
 
 export type ArtworkRef = PlaceholderArtwork | ImageArtwork;

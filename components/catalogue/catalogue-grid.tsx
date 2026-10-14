@@ -33,7 +33,13 @@ function TitleCard({ title }: { title: CatalogueTitle }) {
   return (
     <article className="tile group relative flex h-full flex-col">
       <div className="tile-frame relative aspect-video overflow-hidden rounded-lg bg-surface">
-        <TitleArtwork artwork={title.artwork} title={title.title} decorative className="tile-art absolute inset-0" />
+        <TitleArtwork
+          artwork={title.artwork}
+          title={title.title}
+          decorative
+          sizes="(min-width: 1280px) 20vw, (min-width: 768px) 33vw, (min-width: 480px) 50vw, 100vw"
+          className="tile-art absolute inset-0"
+        />
         <GateMarks />
         {!eligible && (
           <span className="absolute bottom-2 left-2 rounded-md bg-canvas/80 px-2 py-1 text-xs font-medium text-ink-soft backdrop-blur">
