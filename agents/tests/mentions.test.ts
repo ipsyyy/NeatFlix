@@ -4,7 +4,7 @@ import type { Logger } from "@band-ai/sdk/core";
 import { closeIfRejected, type QueueClient } from "@/agents/band/queue";
 import type { AgentRole } from "@/agents/config/roles";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
-import { checkMentions, type RoomMember } from "@/agents/handoff/mentions";
+import { canonicalMentions, checkMentions, type RoomMember } from "@/agents/handoff/mentions";
 import { RELEASE_GOVERNOR_DISCLOSURE, validateResult } from "@/agents/handoff/output-rules";
 import { STAND_IN_DISCLOSURE, validatePlacementPlan } from "@/agents/handoff/placement-plan";
 import { formatHandoffBlock } from "@/agents/handoff/protocol";
@@ -38,8 +38,8 @@ const pdEnvelope = (): HandoffEnvelope =>
   });
 const readable =
   `@ipchoudhury Placement plan ready. Both generation prompts have not been executed. ${STAND_IN_DISCLOSURE} ${RELEASE_GOVERNOR_DISCLOSURE}`;
-const check = (mentions: (string | { id: string })[], members: RoomMember[], text = readable) =>
-  checkMentions({ sender: "placement-director", envelope: pdEnvelope(), mentions, readable: text, members, roleByAgentId });
+const check = (mentions: unknown[], members: RoomMember[], text = readable) =>
+  checkMentions({ sender: "placement-director", envelope: pdEnvelope(), mentions: mentions as never, readable: text, members, roleByAgentId });
 
 describe("mention restrictions", () => {
   it("allows mentioning only the human when the downstream agent is absent", () => {
@@ -149,5 +149,53 @@ describe("stand-in terminology", () => {
     const executed = validPlacementPlan({ prompts: { ...base.prompts, motion: { ...base.prompts.motion, status: "executed" as never } } });
     assert.ok(validatePlacementPlan(executed).length > 0);
     assert.ok(validateResult(pdEnvelope(), readable.replace("have not been executed", "are complete")).some((e) => /not been executed/.test(e)));
+  });
+});
+
+describe("mention identity: one member per mention (security regression)", () => {
+  it("rejects an object whose id, handle, or name name different members", () => {
+    const smuggled = { id: "u1", handle: "@ipchoudhury/nf-release-governor" };
+    assert.ok(check([smuggled], [human, PD, RG]).some((e) => /more than one participant/.test(e)), "id human, handle Release Governor");
+    assert.ok(check([{ id: "u1", name: "NF Campaign Matcher" }], [human, { ...CM, name: "NF Campaign Matcher" }, PD]).some((e) => /more than one participant/.test(e)), "id human, name upstream");
+    assert.ok(check([{ id: "u1", handle: "@ipchoudhury/unknown-agent" }], [human, PD]).some((e) => /not a participant/.test(e)), "handle outside the room");
+  });
+
+  it("rejects a string that matches one member's handle and another member's name", () => {
+    const impostor: RoomMember = { ...CM, name: "ipchoudhury" };
+    assert.ok(check(["@ipchoudhury"], [human, impostor, PD]).some((e) => /more than one participant/.test(e)));
+  });
+
+  it("rejects malformed mention entries instead of crashing", () => {
+    for (const bad of [null, 42, ["@ipchoudhury"], { id: 7 }, {}]) {
+      assert.ok(check([bad, "@ipchoudhury"], [human, PD]).some((e) => /not a participant/.test(e)), JSON.stringify(bad));
+    }
+  });
+
+  it("accepts consistent identities and rebuilds them from the roster", () => {
+    assert.deepEqual(check([{ id: "u1", handle: "@IPChoudhury", name: "Ipsita Choudhury" }], [human, PD]), []);
+    assert.deepEqual(canonicalMentions([{ id: "u1", handle: "ipchoudhury", extra: "ignored" }, "@ipchoudhury"], [human, PD]), [
+      { id: "u1", handle: "ipchoudhury", name: "Ipsita Choudhury" },
+    ]);
+  });
+
+  it("sends BAND only the roster-built mentions on both posting paths", async () => {
+    const sent: unknown[] = [];
+    const tools = {
+      getParticipants: async () => [human, PD, RG],
+      executeToolCall: async (_n: string, a: Record<string, unknown>) => (sent.push(a.mentions), { ok: true }),
+      sendMessage: async (_c: string, mentions?: unknown) => (sent.push(mentions), { ok: true }),
+    };
+    const wrapped = withHandoffStamping(tools, quiet, undefined, { role: "placement-director", roleByAgentId });
+    const content = `${readable}\n\n${formatHandoffBlock(pdEnvelope())}`;
+    const expected = [{ id: "u1", handle: "ipchoudhury", name: "Ipsita Choudhury" }];
+
+    const smuggled = (await wrapped.executeToolCall("band_send_message", { content, mentions: [{ id: "u1", handle: "@ipchoudhury/nf-release-governor" }] })) as { ok: boolean };
+    assert.equal(smuggled.ok, false);
+    await assert.rejects(wrapped.sendMessage(content, [{ id: "u1", handle: "@ipchoudhury/nf-release-governor" }]));
+    assert.deepEqual(sent, [], "nothing posted for a conflicting identity");
+
+    await wrapped.executeToolCall("band_send_message", { content, mentions: [{ id: "u1", handle: "ipchoudhury", note: "model field" }] });
+    await wrapped.sendMessage(content, ["@ipchoudhury"]);
+    assert.deepEqual(sent, [expected, expected]);
   });
 });

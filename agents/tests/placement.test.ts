@@ -6,7 +6,7 @@ import { buildRedelivery } from "@/agents/band/redeliver";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import { validateHandoff } from "@/agents/handoff/envelope";
 import { RELEASE_GOVERNOR_DISCLOSURE, validateResult } from "@/agents/handoff/output-rules";
-import { STAND_IN_DISCLOSURE, validatePlacementPlan, type PlacementPlan } from "@/agents/handoff/placement-plan";
+import { generationClaims, STAND_IN_DISCLOSURE, validatePlacementPlan, type PlacementPlan } from "@/agents/handoff/placement-plan";
 import { formatHandoffBlock } from "@/agents/handoff/protocol";
 import { stampOutgoingContent, validateDraft } from "@/agents/handoff/stamp";
 import { HandoffGate, screenIncomingMessage } from "@/agents/runtime/handoff-gate";
@@ -242,5 +242,43 @@ describe("Placement Director evidence tools and isolation", () => {
     assert.ok(r.ok);
     assert.match(r.draftContent, /Placement Director has not consumed this handoff yet\./);
     assert.equal(stampOutgoingContent(r.draftContent).ok, true);
+  });
+});
+
+describe("placement validator: negation applies only to the matched term (security regression)", () => {
+  const withDescription = (description: string) => validatePlacementPlan(plan({ placement: { ...base.placement, description } }));
+  const withStill = (prompt: string) => validatePlacementPlan(plan({ prompts: { ...base.prompts, stillImageEdit: { ...base.prompts.stillImageEdit, prompt: `${prompt} No hand interaction.` } } }));
+
+  it("rejects claims whose negation belongs to another part of the sentence", () => {
+    assert.ok(withDescription("Gemini generated the image with no visible artifacts.").some((e) => /must not claim generation/.test(e)));
+    assert.ok(withDescription("The researcher holds the cup, with no logo distortion.").some((e) => /Hand interaction/.test(e)));
+    assert.ok(withDescription("No camera movement and the cup covers the woman's face.").some((e) => /Face obstruction/.test(e)));
+    assert.ok(withStill("Do not move the camera; she lifts the cup to her lips.").some((e) => /Hand interaction/.test(e)));
+    assert.deepEqual(generationClaims("Nothing moves, but Reactor rendered the preview clip."), ["Nothing moves, but Reactor rendered the preview clip."]);
+  });
+
+  it("does not let will, should, or to be elsewhere in the sentence excuse a claim", () => {
+    for (const s of [
+      "Reactor rendered the preview clip, which will be reviewed later.",
+      "Gemini generated the edited image that should be checked.",
+      "The generated image is to be reviewed by a human.",
+    ]) {
+      assert.deepEqual(generationClaims(s), [s], s);
+    }
+  });
+
+  it("still allows negation or future tense that applies to the term itself", () => {
+    for (const s of [
+      "No image has been generated.",
+      "Masky has not run.",
+      "The still image will be generated later by Gemini.",
+      "The preview clip is to be rendered only after human approval.",
+      "This is not the generated image.",
+    ]) {
+      assert.deepEqual(generationClaims(s), [], s);
+    }
+    assert.ok(!withDescription("Faces are not covered; the cup rests on the desk.").some((e) => /Face obstruction/.test(e)));
+    assert.ok(!withDescription("Do not place the cup over anyone's face.").some((e) => /Face obstruction/.test(e)));
+    assert.ok(!withStill("Nobody holds the cup.").some((e) => /Hand interaction/.test(e)));
   });
 });

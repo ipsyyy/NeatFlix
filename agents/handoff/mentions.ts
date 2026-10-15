@@ -12,14 +12,49 @@ const normalize = (h: string) => h.trim().replace(/^@/, "").toLowerCase();
 /** Agent-style handles written inline in text, e.g. "@owner/agent-name". */
 const INLINE_AGENT_HANDLE = /@([a-z0-9._-]+\/[a-z0-9._-]+)/gi;
 
-function resolve(mention: MentionArg, members: RoomMember[]): RoomMember | null {
-  if (typeof mention !== "string") {
-    if (mention.id) return members.find((m) => m.id === mention.id) ?? null;
-    if (mention.handle) return resolve(mention.handle, members);
-    return null;
+/** A mention resolved to exactly one room member, or why it cannot be. */
+type Resolution = { member: RoomMember } | { member: null; conflict: boolean };
+
+const byHandle = (key: string, members: RoomMember[]) => members.filter((m) => m.handle && normalize(m.handle) === normalize(key));
+const byName = (key: string, members: RoomMember[]) => members.filter((m) => m.name && normalize(m.name) === normalize(key));
+
+/**
+ * Resolves a mention to one room member. Every identity it carries must name
+ * the same member: an object whose id, handle, and name point at different
+ * members (or at anyone outside the room) is rejected, never resolved by one
+ * field while BAND might route by another.
+ */
+function resolve(mention: unknown, members: RoomMember[]): Resolution {
+  const candidates: RoomMember[][] = [];
+  if (typeof mention === "string") {
+    candidates.push([...byHandle(mention, members), ...byName(mention, members)]);
+  } else if (typeof mention === "object" && mention !== null && !Array.isArray(mention)) {
+    const { id, handle, name } = mention as Record<string, unknown>;
+    if (id != null) candidates.push(typeof id === "string" ? members.filter((m) => m.id === id) : []);
+    if (handle != null) candidates.push(typeof handle === "string" ? byHandle(handle, members) : []);
+    if (name != null) candidates.push(typeof name === "string" ? byName(name, members) : []);
   }
-  const key = normalize(mention);
-  return members.find((m) => (m.handle && normalize(m.handle) === key) || (m.name && m.name.toLowerCase() === key)) ?? null;
+  if (candidates.length === 0 || candidates.some((c) => c.length === 0)) return { member: null, conflict: false };
+  const ids = new Set(candidates.flat().map((m) => m.id));
+  if (ids.size !== 1) return { member: null, conflict: true };
+  return { member: candidates[0][0] };
+}
+
+/**
+ * The mention list to send to BAND, rebuilt from the room roster: one
+ * reference per resolved member, never the model's own fields. Call only after
+ * checkMentions has passed, so every mention resolves.
+ */
+export function canonicalMentions(mentions: unknown[], members: RoomMember[]): { id: string; handle?: string; name?: string }[] {
+  const seen = new Set<string>();
+  const out: { id: string; handle?: string; name?: string }[] = [];
+  for (const mention of mentions) {
+    const { member } = resolve(mention, members);
+    if (!member || seen.has(member.id)) continue;
+    seen.add(member.id);
+    out.push({ id: member.id, ...(member.handle ? { handle: member.handle } : {}), ...(member.name ? { name: member.name } : {}) });
+  }
+  return out;
 }
 
 /**
@@ -43,9 +78,14 @@ export function checkMentions(options: {
   const errors: string[] = [];
   let allowed = 0;
 
-  const judge = (member: RoomMember | null, label: string) => {
+  const judge = (resolution: Resolution, label: string) => {
+    const { member } = resolution;
     if (!member) {
-      errors.push(`Mention ${label} is not a participant in this room; address the human instead.`);
+      errors.push(
+        "conflict" in resolution && resolution.conflict
+          ? `Mention ${label} names more than one participant; use one participant's exact handle.`
+          : `Mention ${label} is not a participant in this room; address the human instead.`,
+      );
       return;
     }
     if (member.type === "User") {
@@ -59,13 +99,14 @@ export function checkMentions(options: {
     else allowed++;
   };
 
-  for (const mention of options.mentions) {
-    const label = typeof mention === "string" ? mention : mention.handle ?? mention.id ?? "(unknown)";
+  for (const mention of options.mentions as unknown[]) {
+    const ref = typeof mention === "object" && mention !== null ? (mention as Record<string, unknown>) : {};
+    const label = typeof mention === "string" ? mention : ref.handle ?? ref.id ?? ref.name ?? "(unknown)";
     judge(resolve(mention, members), String(label).slice(0, 80));
   }
   for (const match of options.readable.matchAll(INLINE_AGENT_HANDLE)) {
-    const member = resolve(match[1], members);
-    if (!member || member.type !== "User") judge(member, `@${match[1].slice(0, 80)}`);
+    const resolution = resolve(match[1], members);
+    if (resolution.member?.type !== "User") judge(resolution, `@${match[1].slice(0, 80)}`);
   }
   if (allowed === 0) errors.push("Mention the human User, or the downstream agent if it is in the room.");
   return [...new Set(errors)];

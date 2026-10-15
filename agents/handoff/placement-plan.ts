@@ -85,26 +85,59 @@ const str = (v: unknown, max = MAX): v is string => typeof v === "string" && v.t
 const strList = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((s) => str(s));
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-const NEGATION = /\b(no|not|never|without|avoid|avoids|must not|do not|don't|does not|nothing|none|free of|keep .{0,30} clear)\b/i;
+/** Words that negate what follows them. */
+const NEGATOR = /(?:\b(?:no|not|never|nothing|none|nobody|neither|nor|without|avoid|avoids|cannot)\b|n't\b)/i;
+/** Ends a clause: punctuation, or a conjunction that starts another claim. */
+const CLAUSE_BREAK = /[,;:.!?\n]|\b(?:and|but|while|whereas|although|though|however)\b/i;
+/** How far back a negation may sit and still apply to the matched term. */
+const NEGATION_REACH = 60;
+/** A future or modal verb directly before a generation verb: "will be rendered", "to be generated". */
+const FUTURE_BEFORE = /\b(?:will|would|should|must|can|could|may|might|to)\s+(?:not\s+)?(?:be\s+|have\s+been\s+)?$|\bfuture\s+$/i;
 
-/** Sentences that affirm `pattern` (i.e. match it without a negation). */
-function affirmed(text: string, pattern: RegExp): string[] {
-  return text
-    .split(/(?<=[.;!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && pattern.test(s) && !NEGATION.test(s));
+/** The part of `before`'s last clause within NEGATION_REACH characters, starting at a whole word. */
+function clauseTail(before: string): string {
+  const window = before.length > NEGATION_REACH ? before.slice(before.length - NEGATION_REACH).replace(/^\S*\s/, "") : before;
+  const parts = window.split(CLAUSE_BREAK);
+  return parts[parts.length - 1];
+}
+
+/**
+ * Sentences in which `pattern` is affirmed. A match is excused only when a
+ * negation applies to it directly: earlier in the same clause, close before
+ * the matched term (or before its `anchor` word, for patterns whose key word
+ * comes last). A negation elsewhere in the sentence ("…with no artifacts")
+ * never excuses it. `allowFuture` also excuses a modal directly before the
+ * anchor ("will be rendered").
+ */
+function affirmed(text: string, pattern: RegExp, options: { anchor?: RegExp; allowFuture?: boolean } = {}): string[] {
+  const found: string[] = [];
+  const sentences = text.split(/(?<=[.;!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 0);
+  for (const sentence of sentences) {
+    const claims = [...sentence.matchAll(new RegExp(pattern.source, "gi"))].some((m) => {
+      const offset = options.anchor ? Math.max(0, m[0].search(options.anchor)) : 0;
+      const before = sentence.slice(0, m.index + offset);
+      if (NEGATOR.test(clauseTail(before))) return false;
+      return !(options.allowFuture && FUTURE_BEFORE.test(before));
+    });
+    if (claims) found.push(sentence);
+  }
+  return found;
 }
 
 export const HAND_INTERACTION =
   /\b(hand|hands|finger|fingers)\b.{0,40}\b(cup|product)\b|\b(holding|holds|hold|grab|grabs|grabbing|picks? up|picking up|lift|lifts|lifting|sip|sips|sipping|drinks? from|reach(es|ing)? for)\b/i;
 export const FACE_OBSTRUCTION =
   /\b(in front of|over|covering|covers|cover|obstruct(s|ing)?|block(s|ing)?|overlap(s|ping)?|occlud(e|es|ing))\b.{0,40}\bfaces?\b|\bfaces?\b.{0,40}\b(covered|obstructed|blocked|occluded|hidden)\b/i;
+/** The verb a generation claim turns on, so "Masky has not run" is judged at "run". */
+const GENERATION_VERB = /\b(generated|rendered|edited|composited|produced|created|inserted|ran|run|returned|output)\b/i;
+/** The verb in "faces … covered" claims, so "faces are not covered" is judged at "covered". */
+const FACE_OBSTRUCTION_VERB = /\b(covered|obstructed|blocked|occluded|hidden)\b/i;
 export const GENERATION_CLAIM =
   /\b(generated|rendered|edited|composited|produced|created|inserted)\b.{0,60}\b(image|frame|video|preview|still|clip|placement)\b|\b(gemini|nano banana|reactor|masky)\b.{0,40}\b(ran|run|has run|generated|produced|rendered|returned|output)\b|\b(the|this) (generated|rendered) (image|frame|video|preview|clip)\b/i;
 
 /** Claims that a generation step has already happened. Negated statements are allowed. */
 export function generationClaims(text: string): string[] {
-  return affirmed(text, GENERATION_CLAIM).filter((s) => !/\bnot (yet )?(been )?executed\b|\bfuture\b|\bwill\b|\bshould\b|\bto be\b/i.test(s));
+  return affirmed(text, GENERATION_CLAIM, { anchor: GENERATION_VERB, allowFuture: true });
 }
 
 /** Validates a placement plan's schema and safety rules against the approved fixtures. */
@@ -218,7 +251,7 @@ export function validatePlacementPlan(input: unknown, expectedCaseId?: string): 
     .filter((v): v is string => typeof v === "string")
     .join("\n");
   for (const s of affirmed(text, HAND_INTERACTION)) e.push(`Hand interaction is not allowed: "${s.slice(0, 120)}"`);
-  for (const s of affirmed(text, FACE_OBSTRUCTION)) e.push(`Face obstruction is not allowed: "${s.slice(0, 120)}"`);
+  for (const s of affirmed(text, FACE_OBSTRUCTION, { anchor: FACE_OBSTRUCTION_VERB })) e.push(`Face obstruction is not allowed: "${s.slice(0, 120)}"`);
   if (!/no hand interaction/i.test(String(still.prompt ?? "")) || !/no hand interaction/i.test(String(motion.prompt ?? ""))) {
     e.push('Both prompts must state "no hand interaction".');
   }

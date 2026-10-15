@@ -2,7 +2,7 @@ import { AnthropicAdapter, type AnthropicAdapterOptions } from "@band-ai/sdk";
 import type { Logger } from "@band-ai/sdk/core";
 import type { AgentRole } from "@/agents/config/roles";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
-import { checkMentions, type MentionArg, type RoomMember } from "@/agents/handoff/mentions";
+import { canonicalMentions, checkMentions, type MentionArg, type RoomMember } from "@/agents/handoff/mentions";
 import { HANDOFF_FENCE, extractHandoffs } from "@/agents/handoff/protocol";
 import { stampOutgoingContent } from "@/agents/handoff/stamp";
 
@@ -52,20 +52,27 @@ export function withHandoffStamping<T extends object>(
   clock: () => Date = () => new Date(),
   policy?: MentionPolicy,
 ): T {
-  const checkPostMentions = async (content: string, mentions: unknown): Promise<string[]> => {
-    if (!policy) return [];
+  /**
+   * Checks a post's mentions against the room and returns the list to send:
+   * rebuilt from the roster (canonicalMentions), so BAND never receives a
+   * model-written id, handle, or name that was not the one checked.
+   */
+  const checkPostMentions = async (content: string, mentions: unknown): Promise<{ errors: string[]; mentions?: unknown[] }> => {
+    if (!policy) return { errors: [] };
     const [block] = extractHandoffs(content);
-    if (!block?.ok) return [];
+    if (!block?.ok) return { errors: [] };
     const getParticipants = (tools as { getParticipants?: () => Promise<RoomMember[]> }).getParticipants;
     const members = getParticipants ? await getParticipants.call(tools) : [];
-    return checkMentions({
+    const list = Array.isArray(mentions) ? mentions : [];
+    const errors = checkMentions({
       sender: policy.role,
       envelope: block.value as HandoffEnvelope,
-      mentions: Array.isArray(mentions) ? (mentions as MentionArg[]) : [],
+      mentions: list as MentionArg[],
       readable: content.replace(BLOCK, ""),
       members,
       roleByAgentId: policy.roleByAgentId,
     });
+    return errors.length > 0 ? { errors } : { errors, mentions: canonicalMentions(list, members) };
   };
 
   const prepare = (content: string) => {
@@ -96,12 +103,13 @@ export function withHandoffStamping<T extends object>(
               logger.warn("Blocked message at send boundary", { tool: name, errors: prepared.errors });
               return handoffSendError(prepared.errors);
             }
-            const mentionErrors = await checkPostMentions(prepared.content, args?.mentions);
-            if (mentionErrors.length > 0) {
-              logger.warn("Blocked message at send boundary", { tool: name, errors: mentionErrors });
-              return handoffSendError(mentionErrors);
+            const checked = await checkPostMentions(prepared.content, args?.mentions);
+            if (checked.errors.length > 0) {
+              logger.warn("Blocked message at send boundary", { tool: name, errors: checked.errors });
+              return handoffSendError(checked.errors);
             }
-            return value.call(target, name, { ...args, content: prepared.content });
+            const mentions = checked.mentions ? { mentions: checked.mentions } : {};
+            return value.call(target, name, { ...args, content: prepared.content, ...mentions });
           }
           if (PERMITTED_PLATFORM_TOOLS.has(name)) return value.call(target, name, args);
           logger.warn("Blocked platform tool at send boundary", { tool: String(name).slice(0, 60) });
@@ -116,12 +124,13 @@ export function withHandoffStamping<T extends object>(
       if (prop === "sendMessage") {
         return async (content: string, ...rest: unknown[]) => {
           const prepared = prepare(content);
-          const mentionErrors = prepared.ok ? await checkPostMentions(prepared.content, rest[0]) : [];
-          if (!prepared.ok || mentionErrors.length > 0) {
-            logger.warn("Blocked message at send boundary", { path: "sendMessage", errors: prepared.ok ? mentionErrors : prepared.errors });
+          const checked = prepared.ok ? await checkPostMentions(prepared.content, rest[0]) : { errors: [] };
+          if (!prepared.ok || checked.errors.length > 0) {
+            logger.warn("Blocked message at send boundary", { path: "sendMessage", errors: prepared.ok ? checked.errors : prepared.errors });
             throw new Error("Message failed validation at the send boundary and was not sent.");
           }
-          return value.call(target, prepared.content, ...rest);
+          const [, ...others] = rest;
+          return checked.mentions ? value.call(target, prepared.content, checked.mentions, ...others) : value.call(target, prepared.content, ...rest);
         };
       }
 
