@@ -18,7 +18,8 @@ import {
 
 /**
  * Deterministic in-memory WorkflowStore for tests only. It mirrors the
- * constraints in supabase/migrations: duplicate keys, foreign keys,
+ * constraints in supabase/migrations: duplicate keys, foreign keys including
+ * the composite case-binding keys,
  * generated-preview completeness, review/approval consistency, one approval
  * per review, and media immutability once a review references it.
  * Lives under agents/tests so production code cannot import it.
@@ -53,7 +54,8 @@ export class MemoryWorkflowStore implements WorkflowStore {
 
   async insertPlan(row: NewPlan): Promise<void> {
     if (this.plans.has(row.plan_id)) throw new DuplicateRecordError("placement_plans");
-    if (!this.cases.has(row.case_id)) throw new IntegrityError("placement_plans", "unknown case");
+    const c = this.cases.get(row.case_id);
+    if (!c || c.title_id !== row.title_id) throw new IntegrityError("placement_plans", "no case with this case_id and title_id");
     this.plans.set(row.plan_id, structuredClone({ ...row, created_at: this.now() }));
   }
 
@@ -66,7 +68,7 @@ export class MemoryWorkflowStore implements WorkflowStore {
       throw new DuplicateRecordError("media_assets");
     }
     if (!this.cases.has(row.case_id)) throw new IntegrityError("media_assets", "unknown case");
-    if (row.plan_id && !this.plans.has(row.plan_id)) throw new IntegrityError("media_assets", "unknown plan");
+    if (row.plan_id && this.plans.get(row.plan_id)?.case_id !== row.case_id) throw new IntegrityError("media_assets", "no plan with this plan_id and case_id");
     if (row.kind === "generated-preview") {
       const prov = row.provenance as Record<string, unknown> | null;
       if (!row.plan_id || !row.generator || !row.model || !row.generated_at || row.latency_ms == null || row.cost_usd == null || prov?.inputPlanId !== row.plan_id) {
@@ -98,11 +100,13 @@ export class MemoryWorkflowStore implements WorkflowStore {
 
   async insertReview(row: NewReview): Promise<void> {
     if (this.reviews.has(row.review_id)) throw new DuplicateRecordError("governor_reviews");
-    if (!this.cases.has(row.case_id) || !this.plans.has(row.plan_id)) throw new IntegrityError("governor_reviews", "unknown case or plan");
+    if (this.plans.get(row.plan_id)?.case_id !== row.case_id) throw new IntegrityError("governor_reviews", "no plan with this plan_id and case_id");
     if (row.decision === "approve-for-human-review" && !row.preview_asset_id) throw new IntegrityError("governor_reviews", "approval needs a preview");
     if (row.preview_asset_id) {
       const asset = this.media.get(row.preview_asset_id);
-      if (!asset || asset.kind !== "generated-preview" || asset.plan_id !== row.plan_id) throw new IntegrityError("governor_reviews", "preview is not a generated preview of the plan");
+      if (!asset || asset.kind !== "generated-preview" || asset.plan_id !== row.plan_id || asset.case_id !== row.case_id) {
+        throw new IntegrityError("governor_reviews", "preview is not a generated preview of this plan and case");
+      }
     }
     this.reviews.set(row.review_id, structuredClone({ ...row, created_at: this.now() }));
   }
@@ -116,6 +120,7 @@ export class MemoryWorkflowStore implements WorkflowStore {
       throw new DuplicateRecordError("human_approvals");
     }
     const review = this.reviews.get(row.review_id);
+    if (this.media.get(row.preview_asset_id)?.case_id !== row.case_id) throw new IntegrityError("human_approvals", "no asset with this asset_id and case_id");
     if (!review || review.decision !== "approve-for-human-review" || review.case_id !== row.case_id || review.preview_asset_id !== row.preview_asset_id) {
       throw new IntegrityError("human_approvals", "approval does not match an approve-for-human-review");
     }

@@ -298,3 +298,112 @@ describe("server-only boundaries", () => {
     }
   });
 });
+
+describe("case isolation (security follow-up)", () => {
+  const OTHER_CASE = "NF-DEMO-0002";
+  const PLAN_V2 = "plan:daybreak-cold-brew:luv-scene-1:v2";
+  const otherCasePlan = () => validPlacementPlan({ planId: PLAN_V2, caseId: OTHER_CASE });
+
+  it("refuses a Governor review whose plan belongs to another case, in code and in the store", async () => {
+    const { store, workflow } = setup();
+    await workflow.savePlan(validPlacementPlan());
+    const base = validGovernorReview("revise");
+    const crossCase = governorHandoff({ decision: "revise", caseId: OTHER_CASE, artifact: { ...base, caseId: OTHER_CASE } });
+    const saved = await workflow.saveGovernorReview(crossCase);
+    assert.ok(!saved.ok && saved.errors.some((e) => /another case/.test(e)));
+    assert.equal(store.reviews.size, 0);
+    await store.ensureCase({ case_id: OTHER_CASE, title_id: "luv-hypothesis", status: "open" });
+    await assert.rejects(
+      store.insertReview({ review_id: `review:${PLAN_ID}:r1`, case_id: OTHER_CASE, plan_id: PLAN_ID, preview_asset_id: null, decision: "revise", review: base }),
+      IntegrityError,
+    );
+  });
+
+  it("refuses a preview from another case or plan, for media, reviews, and approvals", async () => {
+    const { store, workflow } = await withPreview();
+    assert.equal((await workflow.savePlan(otherCasePlan())).ok, true);
+    // Media cannot be filed under one case while pointing at another case's plan.
+    const crossMedia = await workflow.registerMediaAsset(preview({ assetId: "asset:generated-preview:x", storageRef: "storage://previews/x.mp4", caseId: OTHER_CASE }));
+    assert.equal(crossMedia.ok, false);
+    await assert.rejects(store.insertMediaAsset({ ...store.media.get("asset:generated-preview:daybreak-v1")!, asset_id: "asset:y", storage_ref: "storage://y.mp4", case_id: OTHER_CASE }), IntegrityError);
+    // A review in the other case cannot cite case A's preview.
+    const approve = validGovernorReview("approve-for-human-review");
+    await assert.rejects(
+      store.insertReview({ review_id: `review:${PLAN_V2}:r1`, case_id: OTHER_CASE, plan_id: PLAN_V2, preview_asset_id: "asset:generated-preview:daybreak-v1", decision: "approve-for-human-review", review: approve }),
+      IntegrityError,
+    );
+    // An approval cannot bind a preview from another case.
+    await workflow.saveGovernorReview(approvalHandoff());
+    await assert.rejects(
+      store.insertApproval({ approval_id: "a1", case_id: OTHER_CASE, review_id: `review:${PLAN_ID}:r1`, preview_asset_id: "asset:generated-preview:daybreak-v1", reviewer_user_id: owner.id, reviewer_name: "R", decision: "approve" }),
+      IntegrityError,
+    );
+  });
+
+  it("binds a human approval to its review's case, plan, and preview", async () => {
+    const { store, workflow, previews } = await withPreview();
+    await workflow.saveGovernorReview(approvalHandoff());
+    const approval = recordHumanApproval({ sender: owner, ownerUserId: owner.id, approverName: "Reviewer", governorHandoff: approvalHandoff(), previews });
+    assert.ok(approval.ok);
+    const value = approval.ok ? approval.value : (null as never);
+    // A review row moved to another case is refused, as is a preview moved to another case.
+    store.tamper("reviews", `review:${PLAN_ID}:r1`, { case_id: OTHER_CASE });
+    assert.equal((await workflow.saveHumanApproval(value)).ok, false);
+    store.tamper("reviews", `review:${PLAN_ID}:r1`, { case_id: "NF-DEMO-0001" });
+    store.tamper("media", "asset:generated-preview:daybreak-v1", { case_id: OTHER_CASE });
+    assert.equal((await workflow.saveHumanApproval(value)).ok, false);
+    store.tamper("media", "asset:generated-preview:daybreak-v1", { case_id: "NF-DEMO-0001" });
+    assert.equal((await workflow.saveHumanApproval(value)).ok, true, "the correctly bound approval still succeeds");
+    assert.equal(store.approvals.size, 1);
+  });
+
+  it("refuses to attach a plan to a case that belongs to another title (third finding)", async () => {
+    const { store, workflow } = setup();
+    await store.ensureCase({ case_id: "NF-DEMO-0001", title_id: "not-suitable-for-professionals", status: "open" });
+    const saved = await workflow.savePlan(validPlacementPlan());
+    assert.ok(!saved.ok && saved.errors.some((e) => /another title/.test(e)));
+    assert.equal(store.plans.size, 0);
+    await assert.rejects(store.insertPlan({ plan_id: PLAN_ID, case_id: "NF-DEMO-0001", title_id: "luv-hypothesis", scene_id: "luv-scene-1", campaign_id: "daybreak-cold-brew", version: 1, plan: validPlacementPlan(), validation_status: "valid" }), IntegrityError);
+  });
+});
+
+describe("accepted plans never diverge from storage (security follow-up)", () => {
+  it("keeps nothing when persistence fails, and reports the plan unavailable", async () => {
+    class FailingStore extends MemoryWorkflowStore {
+      override async insertPlan(): Promise<void> {
+        throw new Error("network down");
+      }
+    }
+    const plans = new AcceptedPlanRegistry(new WorkflowRegistry(new FailingStore()));
+    await assert.rejects(plans.record(validPlacementPlan()));
+    assert.equal(await plans.lookup(PLAN_ID), null);
+  });
+
+  it("keeps nothing new on a conflicting save and never evaluates the other stored plan", async () => {
+    const { workflow } = setup();
+    const stored = validPlacementPlan({ assumptions: ["The plan that was stored first."] });
+    assert.equal((await workflow.savePlan(stored)).ok, true);
+    const plans = new AcceptedPlanRegistry(workflow);
+    const problems = await plans.record(validPlacementPlan());
+    assert.ok(problems.some((e) => /immutable/.test(e)));
+    assert.equal(await plans.lookup(PLAN_ID), null, "neither the rejected plan nor the different stored plan is evaluated");
+    // Recovery: delivering the plan that really is stored makes it available again.
+    assert.deepEqual(await plans.record(stored), []);
+    assert.deepEqual(await plans.lookup(PLAN_ID), stored);
+  });
+
+  it("returns a stored plan only if it is the one this process accepted", async () => {
+    const { store, workflow } = setup();
+    const plans = new AcceptedPlanRegistry(workflow);
+    assert.deepEqual(await plans.record(validPlacementPlan()), []);
+    assert.deepEqual(await plans.lookup(PLAN_ID), validPlacementPlan());
+    store.tamper("plans", PLAN_ID, { plan: validPlacementPlan({ assumptions: ["Swapped in storage."] }) });
+    assert.equal(await plans.lookup(PLAN_ID), null);
+  });
+
+  it("keeps the in-memory behaviour when no store is configured", async () => {
+    const plans = new AcceptedPlanRegistry();
+    assert.deepEqual(await plans.record(validPlacementPlan()), []);
+    assert.deepEqual(await plans.lookup(PLAN_ID), validPlacementPlan());
+  });
+});

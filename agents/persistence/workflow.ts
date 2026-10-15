@@ -40,7 +40,7 @@ const isoUtc = (v: unknown): string | null => {
   return new Date(v).toISOString();
 };
 /** Canonical JSON with sorted keys, so stored and received documents compare by content. */
-function canonical(value: unknown): string {
+export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (isObj(value)) return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(",")}}`;
   return JSON.stringify(value);
@@ -123,7 +123,12 @@ export class WorkflowRegistry {
       validation_status: "valid",
     };
     if (!Number.isInteger(row.version) || row.version < 1) return fail("planId must end with :v<version>.");
+    // A case belongs to one title: never attach another title's plan to an existing case.
+    const existingCase = await this.store.getCase(plan.caseId);
+    if (existingCase && existingCase.title_id !== row.title_id) return fail(`Case ${plan.caseId} belongs to another title; its plans must be for ${existingCase.title_id}.`);
     await this.store.ensureCase({ case_id: plan.caseId, title_id: row.title_id, status: "open" });
+    const ensured = await this.store.getCase(plan.caseId);
+    if (!ensured || ensured.title_id !== row.title_id) return fail(`Case ${plan.caseId} belongs to another title.`);
     try {
       await this.store.insertPlan(row);
     } catch (error) {
@@ -224,8 +229,14 @@ export class WorkflowRegistry {
     const review: GovernorReview = env.artifact;
     const plan = await this.loadPlan(review.subject.planId);
     if (!plan.ok) return fail(`The reviewed plan is not stored and valid: ${plan.errors[0]}`);
+    // Case isolation: the reviewed plan must belong to the handoff's case.
+    if (plan.value.caseId !== env.caseId || review.caseId !== env.caseId) return fail("The reviewed plan belongs to another case.");
     const previewAssetId = review.preview.status === "provided" && preview.ok ? preview.value.assetId : null;
     if (review.preview.status === "provided" && !previewAssetId) return fail("The review's preview is not a registered generated preview.");
+    if (previewAssetId) {
+      const asset = await this.store.getMediaAsset(previewAssetId);
+      if (!asset || asset.case_id !== env.caseId || asset.plan_id !== review.subject.planId) return fail("The review's preview belongs to another case or plan.");
+    }
     try {
       await this.store.insertReview({
         review_id: review.reviewId,
@@ -259,6 +270,13 @@ export class WorkflowRegistry {
     if (row.decision !== "approve-for-human-review" || !row.preview_asset_id) return fail("Only an approve-for-human-review with a preview can be approved.");
     if (!preview.ok || preview.value.assetId !== row.preview_asset_id) return fail("The approved preview is not the registered preview for this plan.");
     if (approval.caseId !== row.case_id || approval.artifactId !== row.plan_id) return fail("Human approval does not match the stored review.");
+    // Case isolation: the review's plan and preview must belong to the approval's case.
+    const plan = await this.loadPlan(row.plan_id);
+    const asset = await this.store.getMediaAsset(row.preview_asset_id);
+    if (!plan.ok || plan.value.caseId !== row.case_id || (row.review as GovernorReview).caseId !== row.case_id) {
+      return fail("The approved review's plan belongs to another case.");
+    }
+    if (!asset || asset.case_id !== row.case_id || asset.plan_id !== row.plan_id) return fail("The approved preview belongs to another case or plan.");
     if (await this.store.getApprovalForReview(row.review_id)) return fail("This review has already been approved; approvals cannot be replayed.");
     try {
       await this.store.insertApproval({

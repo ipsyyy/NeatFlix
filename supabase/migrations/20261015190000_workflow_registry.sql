@@ -12,6 +12,10 @@
 -- * Media binaries are never stored here: only storage references and metadata.
 -- * JSON documents are validated by NativeFrame's runtime validators before
 --   insert and revalidated after every read; the checks below are a second line.
+-- * Case isolation: composite foreign keys bind every plan to its case's title,
+--   every media asset to its plan's case, every review to its plan's case and
+--   preview, and every approval to its review's case and preview, so PostgreSQL
+--   itself rejects a reference into another case.
 
 create table public.cases (
   case_id     text primary key check (case_id ~ '^[A-Za-z0-9-]{1,100}$'),
@@ -19,12 +23,13 @@ create table public.cases (
   status      text not null default 'open'
               check (status in ('open', 'revise-requested', 'awaiting-human-review', 'approved', 'stopped')),
   created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  updated_at  timestamptz not null default now(),
+  unique (case_id, title_id)
 );
 
 create table public.placement_plans (
   plan_id            text primary key check (plan_id ~ '^plan:[a-z0-9-]+:[a-z0-9-]+:v[0-9]+$'),
-  case_id            text not null references public.cases (case_id),
+  case_id            text not null,
   title_id           text not null,
   scene_id           text not null,
   campaign_id        text not null,
@@ -37,14 +42,17 @@ create table public.placement_plans (
   check (plan ->> 'caseId' = case_id),
   check (plan -> 'scene' ->> 'sceneId' = scene_id),
   check (plan -> 'product' ->> 'campaignId' = campaign_id),
-  check (plan -> 'sourceArtifacts' ->> 'titleId' = title_id)
+  check (plan -> 'sourceArtifacts' ->> 'titleId' = title_id),
+  -- A plan belongs to its case and to that case's title.
+  foreign key (case_id, title_id) references public.cases (case_id, title_id),
+  unique (plan_id, case_id)
 );
 create index placement_plans_case_id_idx on public.placement_plans (case_id);
 
 create table public.media_assets (
   asset_id          text primary key check (asset_id ~ '^asset:[A-Za-z0-9:._-]{1,190}$'),
   case_id           text not null references public.cases (case_id),
-  plan_id           text references public.placement_plans (plan_id),
+  plan_id           text,
   kind              text not null check (kind in ('source-video', 'source-frame', 'edited-still', 'generated-preview')),
   storage_ref       text not null unique check (storage_ref ~ '^(https://[^[:space:]]+|storage://[^[:space:]]+)$' and length(storage_ref) <= 500),
   mime_type         text not null check (mime_type ~ '^(video|image)/[a-z0-9.+-]+$'),
@@ -63,16 +71,20 @@ create table public.media_assets (
       plan_id is not null and generator is not null and model is not null and generated_at is not null
       and latency_ms is not null and cost_usd is not null and provenance ->> 'inputPlanId' = plan_id
     )
-  )
+  ),
+  -- Media tied to a plan must belong to that plan's case (checked when plan_id is set).
+  foreign key (plan_id, case_id) references public.placement_plans (plan_id, case_id),
+  unique (asset_id, case_id),
+  unique (asset_id, plan_id, case_id)
 );
 create index media_assets_plan_kind_idx on public.media_assets (plan_id, kind);
 create index media_assets_case_id_idx on public.media_assets (case_id);
 
 create table public.governor_reviews (
   review_id         text primary key check (review_id ~ '^review:plan:[a-z0-9-]+:[a-z0-9-]+:v[0-9]+:r[0-9]+$'),
-  case_id           text not null references public.cases (case_id),
-  plan_id           text not null references public.placement_plans (plan_id),
-  preview_asset_id  text references public.media_assets (asset_id),
+  case_id           text not null,
+  plan_id           text not null,
+  preview_asset_id  text,
   decision          text not null check (decision in ('revise', 'approve-for-human-review', 'stop')),
   review            jsonb not null check (jsonb_typeof(review) = 'object'),
   created_at        timestamptz not null default now(),
@@ -81,20 +93,28 @@ create table public.governor_reviews (
   check (review ->> 'decision' = decision),
   check (review -> 'subject' ->> 'planId' = plan_id),
   check (decision <> 'approve-for-human-review' or preview_asset_id is not null),
-  check (review -> 'humanApproval' ->> 'status' in ('not-requested', 'pending'))
+  check (review -> 'humanApproval' ->> 'status' in ('not-requested', 'pending')),
+  check (review ->> 'caseId' = case_id),
+  -- The reviewed plan, and the preview when present, belong to the review's case.
+  foreign key (plan_id, case_id) references public.placement_plans (plan_id, case_id),
+  foreign key (preview_asset_id, plan_id, case_id) references public.media_assets (asset_id, plan_id, case_id),
+  unique (review_id, case_id)
 );
 create index governor_reviews_plan_id_idx on public.governor_reviews (plan_id);
 
 create table public.human_approvals (
   approval_id       uuid primary key default gen_random_uuid(),
-  case_id           text not null references public.cases (case_id),
+  case_id           text not null,
   -- One approval per review: a replayed approval violates this constraint.
-  review_id         text not null unique references public.governor_reviews (review_id),
-  preview_asset_id  text not null references public.media_assets (asset_id),
+  review_id         text not null unique,
+  preview_asset_id  text not null,
   reviewer_user_id  text not null check (length(reviewer_user_id) between 1 and 200),
   reviewer_name     text not null check (length(btrim(reviewer_name)) between 1 and 200),
   decision          text not null check (decision = 'approve'),
-  created_at        timestamptz not null default now()
+  created_at        timestamptz not null default now(),
+  -- The approved review and preview belong to the approval's case.
+  foreign key (review_id, case_id) references public.governor_reviews (review_id, case_id),
+  foreign key (preview_asset_id, case_id) references public.media_assets (asset_id, case_id)
 );
 
 -- An approval must match an approve-for-human-review of the same case and preview.
