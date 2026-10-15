@@ -12,6 +12,7 @@ import { stampOutgoingContent, validateDraft } from "@/agents/handoff/stamp";
 import { HandoffGate, screenIncomingMessage } from "@/agents/runtime/handoff-gate";
 import { withHandoffStamping } from "@/agents/runtime/stamping-adapter";
 import { toolsForRole } from "@/agents/tools/evidence-tools";
+import { catalogue } from "@/data/catalogue";
 import { curatorApproval, validPlacementPlan } from "./fixtures";
 
 const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -280,5 +281,27 @@ describe("placement validator: negation applies only to the matched term (securi
     assert.ok(!withDescription("Faces are not covered; the cup rests on the desk.").some((e) => /Face obstruction/.test(e)));
     assert.ok(!withDescription("Do not place the cup over anyone's face.").some((e) => /Face obstruction/.test(e)));
     assert.ok(!withStill("Nobody holds the cup.").some((e) => /Hand interaction/.test(e)));
+  });
+});
+
+describe("Placement Director uses only the current catalogue record", () => {
+  it("rejects plans that reference retired pre-migration title, scene or artwork IDs", () => {
+    const retiredScene = plan({ scene: { ...base.scene, sceneId: "hh-scene-1" } });
+    assert.ok(validatePlacementPlan(retiredScene).some((e) => /recorded scene/.test(e)));
+    const retiredTitle = plan({ sourceArtifacts: { ...base.sourceArtifacts, titleId: "hate-hypothesis" } });
+    assert.ok(validatePlacementPlan(retiredTitle).some((e) => /recorded scene/.test(e)));
+    const retiredArtwork = plan({ sourceMedia: { ...base.sourceMedia, src: "/artwork/the-hate-hypothesis-hero.png" } });
+    assert.ok(validatePlacementPlan(retiredArtwork).some((e) => /approved title artwork/.test(e)));
+  });
+
+  it("returns the current approved LUV artwork from the catalogue, not a retired record", async () => {
+    const tool = toolsForRole("placement-director").find((t) => t.name === "nativeframe_get_source_artwork")!;
+    const current = catalogue.find((t) => t.id === "luv-hypothesis")!;
+    assert.equal(current.artwork.kind, "image");
+    const r = (await tool.handler({ titleId: "luv-hypothesis" })) as Record<string, unknown>;
+    assert.equal(r.src, current.artwork.kind === "image" ? current.artwork.src : null);
+    assert.equal(r.alt, current.artwork.kind === "image" ? current.artwork.alt : null);
+    assert.equal(r.kind, "title-artwork-stand-in");
+    assert.equal(((await tool.handler({ titleId: "hate-hypothesis" })) as { found: boolean }).found, false);
   });
 });

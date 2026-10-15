@@ -16,7 +16,7 @@
  * timestamps, and Claude call metadata. Never keys or reasoning.
  *
  * Run: npm run agents:matcher-test
- *      npm run agents:matcher-test -- --room-title=NF-DEMO-0001-MATCH-R1 --source-room-title=NF-DEMO-0001-R2
+ *      npm run agents:matcher-test -- --room-title=NF-DEMO-0001-LUV-MATCH-R2 --source-room-title=NF-DEMO-0001-LUV-R1
  */
 import type { Logger } from "@band-ai/sdk/core";
 import { bandClientFor, ensureCaseRoom, type RoomParticipant } from "@/agents/band/case-room";
@@ -52,9 +52,9 @@ const STOP_TIMEOUT_MS = 10_000;
 
 const arg = (name: string) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1]?.trim();
 const title = (value: string | undefined, fallback: string) => (value && /^[\w.-]{1,120}$/.test(value) ? value : fallback);
-const ROOM_TITLE = title(arg("room-title"), "NF-DEMO-0001-MATCH-R1");
-const SOURCE_ROOM_TITLE = title(arg("source-room-title"), "NF-DEMO-0001-R2");
-const ORIGINAL_ID = /^[0-9a-f-]{36}$/.test(arg("original-message") ?? "") ? arg("original-message")! : "479ee01a-48e0-48b0-9220-7bc5c1aabf37";
+const ROOM_TITLE = title(arg("room-title"), "NF-DEMO-0001-LUV-MATCH-R2");
+const SOURCE_ROOM_TITLE = title(arg("source-room-title"), "NF-DEMO-0001-LUV-R1");
+const ORIGINAL_ID = /^[0-9a-f-]{36}$/.test(arg("original-message") ?? "") ? arg("original-message")! : "78667c5f-19a4-4232-8a37-a42db9ae0ce8";
 
 type Event = { kind: string; ctx: Record<string, unknown>; at: number };
 type RoomItem = { id: string; senderId: string; senderType: string; senderName: string; at: string; content: string; type: string; mentions: string[] };

@@ -16,6 +16,8 @@
  * timestamps, hostnames, and Claude call metadata. Never keys or reasoning.
  *
  * Run: npm run agents:placement-test
+ *      npm run agents:placement-test -- --room-title=NF-DEMO-0001-LUV-PLACEMENT-R2 \
+ *        --source-room-title=NF-DEMO-0001-LUV-MATCH-R1 --original-message=<Campaign Matcher message ID>
  */
 import type { Logger } from "@band-ai/sdk/core";
 import { bandClientFor, ensureCaseRoom, type RoomParticipant } from "@/agents/band/case-room";
@@ -47,6 +49,7 @@ import { CLOCK_SKEW_MS, checkHandoffTimestamp } from "@/agents/handoff/timestamp
 import type { ClaudeCallRecord } from "@/agents/runtime/claude-client";
 import { createNativeFrameAgents, type NativeFrameAgent } from "@/agents/runtime/create-agents";
 import { createRedactingLogger, safeErrorMessage } from "@/agents/security/redact";
+import { catalogue } from "@/data/catalogue";
 
 const CASE_ID = "NF-DEMO-0001";
 const ACTIVE_ROLE: AgentRole = "placement-director";
@@ -60,9 +63,16 @@ const STOP_TIMEOUT_MS = 10_000;
 
 const arg = (name: string) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1]?.trim();
 const title = (value: string | undefined, fallback: string) => (value && /^[\w.-]{1,120}$/.test(value) ? value : fallback);
-const ROOM_TITLE = title(arg("room-title"), "NF-DEMO-0001-PLACEMENT-R3");
-const SOURCE_ROOM_TITLE = title(arg("source-room-title"), "NF-DEMO-0001-MATCH-R1");
-const ORIGINAL_ID = /^[0-9a-f-]{36}$/.test(arg("original-message") ?? "") ? arg("original-message")! : "fceebd8f-9472-4ac6-8946-14c2ecb7c156";
+const ROOM_TITLE = title(arg("room-title"), "NF-DEMO-0001-LUV-PLACEMENT-R2");
+const SOURCE_ROOM_TITLE = title(arg("source-room-title"), "NF-DEMO-0001-LUV-MATCH-R1");
+const ORIGINAL_ID = /^[0-9a-f-]{36}$/.test(arg("original-message") ?? "") ? arg("original-message")! : "447209d8-0b10-4f44-ab7b-2db272c24237";
+
+/** Current catalogue references the plan must use (post-migration IDs and approved artwork). */
+const TITLE_ID = "luv-hypothesis";
+const SCENE_ID = "luv-scene-1";
+const MATCH_ARTIFACT_ID = `match:daybreak-cold-brew:${SCENE_ID}`;
+const currentTitle = catalogue.find((t) => t.id === TITLE_ID);
+const ARTWORK_SRC = currentTitle?.artwork.kind === "image" ? currentTitle.artwork.src : null;
 
 /** Hostnames contacted over fetch by this process (BAND REST and the Anthropic API). */
 const contactedHosts = new Set<string>();
@@ -202,6 +212,12 @@ async function main(): Promise<number> {
     return 1;
   }
   const originalBlock = extractHandoffs(original.content)[0];
+  // Refuse to re-deliver a recommendation for a retired catalogue record.
+  const originalArtifact = originalBlock?.ok ? (originalBlock.value as { artifactId?: unknown }).artifactId : undefined;
+  if (!ARTWORK_SRC || originalArtifact !== MATCH_ARTIFACT_ID) {
+    console.error(`Original handoff must recommend ${MATCH_ARTIFACT_ID} for ${TITLE_ID} with approved image artwork; nothing was posted.`);
+    return 1;
+  }
   console.log(`\nOriginal Campaign Matcher handoff ${original.id} in "${SOURCE_ROOM_TITLE}" (BAND ${original.at}); prepared unstamped re-delivery.`);
   const statusBefore = new Map(await Promise.all(others.map(async (c) => [c.role, await deliveryStatus(c, urls, room.roomId)] as const)));
 
@@ -380,8 +396,10 @@ async function main(): Promise<number> {
       replies.length === 1 && extractHandoffs(reply?.content ?? "").length === 1 && envelope?.senderRole === "placement-director" &&
         envelope.recipientRole === "release-governor" && envelope.decision === "instructions-ready" && envelope.blockers.length === 0 && readable.length > 0],
     ["Typed placement plan is present, schema-valid, and visible in the BAND message", Boolean(plan) && planErrors.length === 0 && Boolean(reply?.content.includes('"kind": "placement-plan"'))],
-    ["Plan: luv-scene-1 00:42–00:47, Daybreak Cold Brew branded takeaway cup, visible lab desk, stationary, no hand interaction",
-      plan?.scene.sceneId === "luv-scene-1" && plan.scene.startSeconds === 42 && plan.scene.endSeconds === 47 && plan.product.product === "Daybreak Cold Brew" &&
+    [`Plan: ${TITLE_ID} ${SCENE_ID} 00:42–00:47 from ${MATCH_ARTIFACT_ID}, artwork ${ARTWORK_SRC}; Daybreak Cold Brew branded takeaway cup, visible lab desk, stationary, no hand interaction`,
+      plan?.sourceArtifacts.titleId === TITLE_ID && plan.sourceArtifacts.matchArtifactId === MATCH_ARTIFACT_ID && plan.sourceMedia.src === ARTWORK_SRC &&
+        envelope?.artifactId.includes(SCENE_ID) === true && !/hate|hh-scene/i.test(reply?.content ?? "") &&
+        plan.scene.sceneId === SCENE_ID && plan.scene.startSeconds === 42 && plan.scene.endSeconds === 47 && plan.product.product === "Daybreak Cold Brew" &&
         plan.product.format === "Branded takeaway coffee cup" && plan.placement.region.toLowerCase() === PLACEMENT_REGION && plan.placement.motion === "stationary" && plan.placement.handInteraction === "none"],
     ["Plan has scale, perspective, lighting, shadow, color guidance; face, body, background, composition preservation; brand limits; negative constraints",
       Boolean(plan) && Object.values(plan!.guidance).every((v) => String(v).trim().length > 0) && Object.values(plan!.preservation).every((v) => (v as string[]).length > 0) &&
