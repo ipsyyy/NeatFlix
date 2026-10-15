@@ -1,5 +1,6 @@
 import type { AgentRole } from "@/agents/config/roles";
 import type { HandoffEnvelope } from "./envelope";
+import { NO_PREVIEW_DISCLOSURE, visualClaims } from "./governor-review";
 import { generationClaims, misleadingFrameTerms, STAND_IN_DISCLOSURE } from "./placement-plan";
 
 /**
@@ -14,10 +15,14 @@ export const PLACEMENT_DIRECTOR_DISCLOSURE = "Placement Director has not consume
 export const RELEASE_GOVERNOR_DISCLOSURE = "Release Governor has not consumed this handoff yet.";
 
 /** Disclosure sentences required in the readable text of a handoff, by sender and recipient. */
-export function requiredDisclosures(envelope: Pick<HandoffEnvelope, "senderRole" | "recipientRole">): string[] {
-  if (envelope.senderRole === "campaign-matcher" && envelope.recipientRole === "placement-director") return [PLACEMENT_DIRECTOR_DISCLOSURE];
-  if (envelope.senderRole === "placement-director" && envelope.recipientRole === "release-governor") return [RELEASE_GOVERNOR_DISCLOSURE];
-  return [];
+export function requiredDisclosures(envelope: Pick<HandoffEnvelope, "senderRole" | "recipientRole" | "artifact">): string[] {
+  const out: string[] = [];
+  if (envelope.recipientRole === "placement-director" && (envelope.senderRole === "campaign-matcher" || envelope.senderRole === "release-governor")) {
+    out.push(PLACEMENT_DIRECTOR_DISCLOSURE);
+  }
+  if (envelope.senderRole === "placement-director" && envelope.recipientRole === "release-governor") out.push(RELEASE_GOVERNOR_DISCLOSURE);
+  if (envelope.artifact?.kind === "governor-review" && envelope.artifact.preview?.status === "missing") out.push(NO_PREVIEW_DISCLOSURE);
+  return out;
 }
 
 /**
@@ -37,6 +42,7 @@ export const APPROVED_EVIDENCE_SOURCES: Partial<Record<AgentRole, readonly strin
     "nativeframe_get_campaign",
     "nativeframe_get_source_artwork",
   ],
+  "release-governor": ["handoff", "nativeframe_check_placement_plan", "nativeframe_get_preview_status"],
 };
 
 /** References to evidence outside the authenticated handoff and tool results. */
@@ -56,6 +62,10 @@ export function validateResult(envelope: HandoffEnvelope, readable?: string): st
     const cited = [
       ...envelope.evidence.map((item, i) => ({ item, at: `evidence[${i}]` })),
       ...(envelope.artifact?.evidence ?? []).map((item, i) => ({ item, at: `artifact.evidence[${i}]` })),
+      ...(envelope.artifact?.kind === "governor-review" ? envelope.artifact.checks : []).map((c, i) => ({
+        item: { claim: c.detail, source: c.source },
+        at: `artifact.checks[${i}]`,
+      })),
     ];
     cited.forEach(({ item, at }) => {
       const source = item.source.trim().toLowerCase();
@@ -77,6 +87,19 @@ export function validateResult(envelope: HandoffEnvelope, readable?: string): st
   if (readable !== undefined) {
     for (const sentence of requiredDisclosures(envelope)) {
       if (!readable.includes(sentence)) errors.push(`The readable result must contain exactly: "${sentence}"`);
+    }
+  }
+
+  if (envelope.senderRole === "release-governor") {
+    const text = [readable ?? "", envelope.nextAction, ...envelope.assumptions, ...envelope.blockers, ...envelope.evidence.map((x) => x.claim)].join("\n");
+    for (const s of visualClaims(text)) errors.push(`No preview has been inspected or approved; remove the claim: "${s.slice(0, 120)}"`);
+    // A "provided" preview has already been confirmed against the preview registry by envelope validation.
+    const previewRecorded = envelope.artifact?.kind === "governor-review" && envelope.artifact.preview.status === "provided";
+    if (!previewRecorded) {
+      for (const s of generationClaims(text)) errors.push(`No generation has run; remove the claim: "${s.slice(0, 120)}"`);
+    }
+    for (const term of misleadingFrameTerms(text)) {
+      errors.push(`Do not call the stand-in a "${term}"; it is approved title artwork, not footage.`);
     }
   }
 

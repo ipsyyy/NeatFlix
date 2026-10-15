@@ -1,4 +1,5 @@
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
+import type { GovernorReview, PreviewRecord, PreviewRegistry, ReviewDecision } from "@/agents/handoff/governor-review";
 import type { PlacementPlan } from "@/agents/handoff/placement-plan";
 
 /** A valid Content Curator → Scene Scout handoff to derive test cases from. */
@@ -20,13 +21,73 @@ export function curatorApproval(overrides: Partial<HandoffEnvelope> = {}): Hando
   };
 }
 
+export const PLAN_ID = "plan:daybreak-cold-brew:luv-scene-1:v1";
+
+/** A preview the (future) media pipeline would record. Test-only: no such preview exists today. */
+export const FUTURE_PREVIEW: PreviewRecord = {
+  planId: PLAN_ID,
+  assetRef: "storage://previews/luv-scene-1/daybreak-v1.mp4",
+  provenance: { generator: "reactor", generatedAt: "2026-10-20T10:00:00Z", inputPlanId: PLAN_ID },
+  generationMetadata: { model: "reactor-orbis", latencyMs: 41000, costUsd: 0.42 },
+};
+export const FUTURE_PREVIEWS: PreviewRegistry = { find: (planId) => (planId === PLAN_ID ? FUTURE_PREVIEW : null) };
+
+/** A valid Release Governor review for each decision. Approval needs FUTURE_PREVIEWS. */
+export function validGovernorReview(decision: ReviewDecision = "revise", overrides: Partial<GovernorReview> = {}): GovernorReview {
+  const approve = decision === "approve-for-human-review";
+  const stop = decision === "stop";
+  return {
+    kind: "governor-review",
+    version: 1,
+    reviewId: `review:${PLAN_ID}:r1`,
+    caseId: "NF-DEMO-0001",
+    subject: { titleId: "luv-hypothesis", sceneId: "luv-scene-1", campaignId: "daybreak-cold-brew", planId: PLAN_ID },
+    decision,
+    hhh: {
+      helpful: { outcome: approve ? "pass" : "not-evaluated", rationale: "The plan is actionable; its visual result is the open question." },
+      honest: { outcome: "pass", rationale: "The plan labels both prompts not executed and the artwork as a stand-in." },
+      harmless: { outcome: stop ? "fail" : "pass", rationale: stop ? "Brand-safety rule failed." : "Rights, audience, and scene guardrails pass." },
+    },
+    checks: [
+      { id: "campaign-match", category: "policy", outcome: stop ? "fail" : "pass", detail: "Deterministic match decision.", source: "nativeframe_check_placement_plan.checks[campaign-match]" },
+      { id: "preview-visual-quality", category: "technical", outcome: approve ? "pass" : "not-evaluated", detail: approve ? "Naturalness evaluation recorded with the preview." : "No preview to evaluate.", source: approve ? "nativeframe_get_preview_status.assetRef" : "nativeframe_check_placement_plan.checks[preview-visual-quality]" },
+    ],
+    evidence: [
+      { claim: "The plan meets every deterministic rule.", source: "nativeframe_check_placement_plan.checks[plan-rules]" },
+      { claim: approve ? "A generated preview is recorded." : "No generated preview is recorded.", source: "nativeframe_get_preview_status.previewExists" },
+    ],
+    blockers: approve ? [] : stop ? ["Brand-safety veto."] : ["No generated preview exists to evaluate."],
+    corrections:
+      decision === "revise"
+        ? [
+            { kind: "generate-preview", issue: "No generated preview exists.", requiredAction: "Run the approved still-image and motion prompts and record the preview." },
+            { kind: "provide-provenance", issue: "No provenance exists.", requiredAction: "Record generator, generation time, and input plan ID." },
+            { kind: "provide-evaluation-evidence", issue: "No visual evaluation evidence.", requiredAction: "Provide naturalness and preservation evidence for the preview." },
+          ]
+        : [],
+    assumptions: ["All data are fictional demo fixtures."],
+    uncertainty: approve ? "Human review owns the final visual decision." : "Visual quality is unknown until a preview exists.",
+    preview: approve
+      ? { status: "provided", assetRef: FUTURE_PREVIEW.assetRef, provenance: { ...FUTURE_PREVIEW.provenance }, generationMetadata: { ...FUTURE_PREVIEW.generationMetadata } }
+      : { status: "missing", assetRef: null, provenance: null, generationMetadata: null },
+    humanApproval: { status: approve ? "pending" : "not-requested" },
+    ...overrides,
+  };
+}
+
+/** A valid Release Governor handoff carrying a review for its decision. */
 export function governorHandoff(overrides: Partial<HandoffEnvelope> = {}): HandoffEnvelope {
+  const decision = (overrides.decision ?? "approve-for-human-review") as ReviewDecision;
+  const review = validGovernorReview(decision);
   return curatorApproval({
-    artifactId: "placement:luv-scene-1:v1",
+    artifactId: PLAN_ID,
     senderRole: "release-governor",
-    recipientRole: "human-reviewer",
-    decision: "approve-for-human-review",
-    nextAction: "Human reviewer to approve or reject release.",
+    recipientRole: decision === "revise" ? "placement-director" : "human-reviewer",
+    decision,
+    evidence: review.evidence,
+    blockers: review.blockers,
+    nextAction: decision === "revise" ? "Placement Director to generate the preview and return it with provenance." : "Human reviewer to approve or reject release.",
+    artifact: review,
     ...overrides,
   });
 }

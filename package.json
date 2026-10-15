@@ -14,7 +14,8 @@
     "agents:handoff-test": "tsx agents/scripts/run-handoff-test.ts",
     "agents:matcher-test": "tsx agents/scripts/run-matcher-test.ts",
     "agents:placement-test": "tsx agents/scripts/run-placement-test.ts",
-    "agents:close-queued": "tsx agents/scripts/close-queued.ts"
+    "agents:close-queued": "tsx agents/scripts/close-queued.ts",
+    "agents:governor-test": "tsx agents/scripts/run-governor-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",

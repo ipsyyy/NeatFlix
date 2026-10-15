@@ -73,6 +73,8 @@ export function checkMentions(options: {
   readable: string;
   members: RoomMember[];
   roleByAgentId: ReadonlyMap<string, AgentRole>;
+  /** When set, the downstream agent may not be mentioned either: it is present but must not receive work. */
+  humanOnly?: boolean;
 }): string[] {
   const { sender, envelope, members, roleByAgentId } = options;
   const errors: string[] = [];
@@ -96,6 +98,7 @@ export function checkMentions(options: {
     if (!role) errors.push(`Mention ${label} is not a NativeFrame agent.`);
     else if (role === sender) errors.push("An agent must not mention itself.");
     else if (role !== envelope.recipientRole) errors.push(`Mention ${label} is not this handoff's downstream recipient (${envelope.recipientRole}).`);
+    else if (options.humanOnly) errors.push(`Mention only the human User; ${role} must not receive this handoff yet.`);
     else allowed++;
   };
 
@@ -108,6 +111,6 @@ export function checkMentions(options: {
     const resolution = resolve(match[1], members);
     if (resolution.member?.type !== "User") judge(resolution, `@${match[1].slice(0, 80)}`);
   }
-  if (allowed === 0) errors.push("Mention the human User, or the downstream agent if it is in the room.");
+  if (allowed === 0) errors.push(options.humanOnly ? "Mention the human User." : "Mention the human User, or the downstream agent if it is in the room.");
   return [...new Set(errors)];
 }

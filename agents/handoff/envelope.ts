@@ -1,4 +1,5 @@
 import { HUMAN_REVIEWER, isAgentRole, type AgentRole, type HandoffParty } from "@/agents/config/roles";
+import { NO_GENERATED_PREVIEWS, validateGovernorReview, type GovernorReview, type PreviewRegistry } from "./governor-review";
 import { validatePlacementPlan, type PlacementPlan } from "./placement-plan";
 
 /**
@@ -39,8 +40,11 @@ export type HandoffEnvelope = {
   nextAction: string;
   /** ISO 8601. */
   timestamp: string;
-  /** Typed artifact the handoff carries. Only Placement Director sends one: its placement plan. */
-  artifact?: PlacementPlan;
+  /**
+   * Typed artifact the handoff carries: Placement Director's placement plan, or
+   * Release Governor's review. No other role sends one.
+   */
+  artifact?: PlacementPlan | GovernorReview;
 };
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
@@ -65,7 +69,10 @@ function isParty(value: unknown): value is HandoffParty {
  * range, that the decision belongs to the sender's role, and that blockers agree
  * with the decision. Role order is checked separately in protocol.ts.
  */
-export function validateHandoff(input: unknown): ValidationResult<HandoffEnvelope> {
+export function validateHandoff(
+  input: unknown,
+  options: { previews?: PreviewRegistry } = {},
+): ValidationResult<HandoffEnvelope> {
   const errors: string[] = [];
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { ok: false, errors: ["Handoff must be a JSON object."] };
@@ -123,11 +130,22 @@ export function validateHandoff(input: unknown): ValidationResult<HandoffEnvelop
     errors.push("timestamp must be an ISO 8601 date-time.");
   }
 
+  const caseId = typeof h.caseId === "string" ? h.caseId : undefined;
   if ("artifact" in h) {
-    if (h.senderRole !== "placement-director") errors.push("Only Placement Director handoffs may carry an artifact.");
-    else errors.push(...validatePlacementPlan(h.artifact, typeof h.caseId === "string" ? h.caseId : undefined));
+    if (h.senderRole === "placement-director") errors.push(...validatePlacementPlan(h.artifact, caseId));
+    else if (h.senderRole === "release-governor") {
+      errors.push(
+        ...validateGovernorReview(
+          h.artifact,
+          { caseId, decision: typeof h.decision === "string" ? h.decision : undefined, artifactId: typeof h.artifactId === "string" ? h.artifactId : undefined },
+          options.previews ?? NO_GENERATED_PREVIEWS,
+        ),
+      );
+    } else errors.push("Only Placement Director and Release Governor handoffs may carry an artifact.");
   } else if (h.senderRole === "placement-director" && h.decision === "instructions-ready") {
     errors.push('Placement Director "instructions-ready" must carry its placement plan as artifact.');
+  } else if (h.senderRole === "release-governor") {
+    errors.push("Release Governor handoffs must carry their review as artifact.");
   }
 
   if (errors.length > 0) return { ok: false, errors };

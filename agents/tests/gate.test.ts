@@ -5,7 +5,8 @@ import { AGENT_ROLES, type AgentRole, type HandoffParty } from "@/agents/config/
 import type { HandoffDecision, HandoffEnvelope } from "@/agents/handoff/envelope";
 import { formatHandoffBlock } from "@/agents/handoff/protocol";
 import { HandoffGate, screenIncomingMessage, type MessageSender } from "@/agents/runtime/handoff-gate";
-import { curatorApproval, validPlacementPlan } from "./fixtures";
+import type { ReviewDecision } from "@/agents/handoff/governor-review";
+import { curatorApproval, PLAN_ID, validGovernorReview, validPlacementPlan } from "./fixtures";
 
 const DOWNSTREAM: AgentRole[] = ["scene-scout", "campaign-matcher", "placement-director", "release-governor"];
 const USER: MessageSender = { role: null, type: "User" };
@@ -14,7 +15,12 @@ const agent = (role: AgentRole): MessageSender => ({ role, type: "Agent" });
 
 function handoff(from: AgentRole, decision: HandoffDecision, to: HandoffParty): string {
   const blockers = ["revise", "reject", "blocked", "stop"].includes(decision) ? ["Correction needed"] : [];
-  const artifact = from === "placement-director" && decision === "instructions-ready" ? { artifact: validPlacementPlan() } : {};
+  const artifact =
+    from === "placement-director" && decision === "instructions-ready"
+      ? { artifact: validPlacementPlan() }
+      : from === "release-governor"
+        ? { artifact: validGovernorReview(decision as ReviewDecision), artifactId: PLAN_ID }
+        : {};
   return formatHandoffBlock(curatorApproval({ senderRole: from, decision, recipientRole: to, blockers, ...artifact }));
 }
 

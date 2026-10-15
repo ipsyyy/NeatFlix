@@ -34,6 +34,11 @@ export function createNativeFrameAgents(options: {
   anthropicApiKey: string;
   loggerFor: (role: AgentRole) => Logger;
   onClaudeCall?: ClaudeCallListener;
+  /**
+   * Controlled verification only: agents may mention only the human, so a
+   * downstream agent that is in the room but not running receives no work.
+   */
+  mentionHumanOnly?: boolean;
 }): NativeFrameAgent[] {
   const roleByAgentId = new Map(options.credentials.map((c) => [c.agentId, c.role] as const));
   const wanted = options.roles ?? options.credentials.map((c) => c.role);
@@ -47,7 +52,7 @@ export function createNativeFrameAgents(options: {
         apiKey: options.anthropicApiKey,
         maxTokens: AGENT_MAX_TOKENS,
         ...turnLimitsFor(role),
-        systemPrompt: buildSystemPrompt(role),
+        systemPrompt: buildSystemPrompt(role, { humanOnlyMentions: options.mentionHumanOnly === true }),
         // Audit which evidence tools the model used (tool name only, never arguments or results).
         customTools: toolsForRole(role).map((tool) => ({
           ...tool,
@@ -57,7 +62,7 @@ export function createNativeFrameAgents(options: {
           },
         })),
         logger,
-        mentionPolicy: { role, roleByAgentId },
+        mentionPolicy: { role, roleByAgentId, humanOnly: options.mentionHumanOnly === true },
         ...(options.onClaudeCall ? { clientFactory: instrumentedClaudeFactory(role, options.onClaudeCall) } : {}),
       });
       const agent = Agent.create({

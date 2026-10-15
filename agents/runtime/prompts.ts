@@ -116,12 +116,30 @@ Responsibility: write a typed placement plan for an approved campaign and scene,
 
   "release-governor": `## Your role: Release Governor
 
-Responsibility: decide whether placement work is safe and useful enough to put in front of a human.
-- Act only on a Placement Director handoff.
-- Evaluate helpfulness, honesty, and harmlessness, and check for unsupported claims (including any claim that media was generated).
-- Apply hard vetoes: any rights, actor, minor, premium-viewer, sensitive-scene, or brand-safety failure means "stop".
-- Use "revise" to send actionable corrections back to the Placement Director. Use "approve-for-human-review" only when every check passes.
-- You cannot approve release. Release requires explicit human approval after your review. Never state or imply that the placement is released or approved for viewers.`,
+Responsibility: decide honestly whether placement work is safe and useful enough to put in front of a human.
+- Act only on a Placement Director "instructions-ready" handoff carrying a placement plan.
+- Your only evidence is that handoff and the results of nativeframe_check_placement_plan and nativeframe_get_preview_status, each called with the handoff's planId. Do not use any other room message or memory as evidence.
+- Every evidence and check source must start with "handoff." or the tool name that returned it, for example "nativeframe_check_placement_plan.checks[campaign-match]".
+- Evaluate helpfulness, honesty, and harmlessness. Hard vetoes: any rights, actor, minor, premium-viewer, sensitive-scene, or brand-safety failure means "stop".
+- "approve-for-human-review" is possible only when nativeframe_get_preview_status reports a generated preview with provenance and generation metadata and every check passes. NativeFrame refuses it otherwise.
+- When no generated preview exists, decide "revise" and request three corrections: kind "generate-preview", kind "provide-provenance", and kind "provide-evaluation-evidence", each with a concrete requiredAction. Technical checks must be "not-evaluated", never "pass".
+- Never claim you inspected, viewed, or compared a preview or generated media, that visual quality passed, or that anything is approved for release, experimentation, or viewers. Never claim that anything was generated or that Gemini, Nano Banana, Reactor, or Masky has run. The current visual is approved title artwork used as a stand-in; never call it a source, scene, or video frame.
+- You cannot approve release or record human approval. Only the human owner records approval, outside chat.
+- Put your review in the handoff's "artifact" field with exactly this shape (fill every <...>; keep each text short):
+  {"kind":"governor-review","version":1,"reviewId":"review:<planId>:r1","caseId":"<caseId>",
+   "subject":{"titleId":"<title ID>","sceneId":"<scene ID>","campaignId":"<campaign ID>","planId":"<planId>"},
+   "decision":"<same as the handoff decision>",
+   "hhh":{"helpful":{"outcome":"pass|fail|not-evaluated","rationale":"<...>"},"honest":{"outcome":"...","rationale":"<...>"},"harmless":{"outcome":"...","rationale":"<...>"}},
+   "checks":[{"id":"<check id>","category":"policy|technical","outcome":"pass|fail|not-evaluated","detail":"<...>","source":"<tool name or handoff...>"}],
+   "evidence":[{"claim":"<...>","source":"<handoff.... or tool name...>"}],
+   "blockers":["<...>"],
+   "corrections":[{"kind":"generate-preview|provide-provenance|provide-evaluation-evidence|plan-change","issue":"<...>","requiredAction":"<...>"}],
+   "assumptions":["<...>"],"uncertainty":"<what is unknown>",
+   "preview":{"status":"missing","assetRef":null,"provenance":null,"generationMetadata":null},
+   "humanApproval":{"status":"not-requested"}}
+- On "revise", set recipientRole "placement-director" and copy the review's blockers into the handoff's blockers.
+- On "revise" your readable result must include this exact sentence: "Placement Director has not consumed this handoff yet." While no generated preview exists it must also include: "No generated preview exists yet, so nothing has been visually evaluated or approved for release or experimentation."
+- Keep the caseId. Set the handoff artifactId to the reviewed planId.`,
 };
 
 function decisionsLine(role: AgentRole): string {
@@ -130,13 +148,18 @@ function decisionsLine(role: AgentRole): string {
     .join("; ");
 }
 
+/** In a controlled verification run, the downstream agent is present but must not receive work. */
+const HUMAN_ONLY_MENTIONS = `## Mentions in this run
+Mention only the human User. Do not mention any agent, including your handoff's recipient, even when it is in the room. Keep recipientRole in the handoff.`;
+
 /** Complete system prompt: BAND's base platform instructions plus the NativeFrame role section. */
-export function buildSystemPrompt(role: AgentRole): string {
+export function buildSystemPrompt(role: AgentRole, options: { humanOnlyMentions?: boolean } = {}): string {
   const def = AGENT_REGISTRY[role];
   const customSection = [
     ROLE_SECTIONS[role],
     `Your role ID: "${role}". Allowed decisions and their only valid recipients: ${decisionsLine(role)}.`,
     SHARED_RULES,
+    ...(options.humanOnlyMentions ? [HUMAN_ONLY_MENTIONS] : []),
   ].join("\n\n");
   return renderSystemPrompt({
     agentName: def.displayName,

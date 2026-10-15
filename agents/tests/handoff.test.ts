@@ -1,16 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { validateHandoff } from "@/agents/handoff/envelope";
-import {
-  canConsume,
-  canRelease,
-  extractHandoffs,
-  formatHandoffBlock,
-  validateOutgoing,
-  type HumanApproval,
-} from "@/agents/handoff/protocol";
+import { canRelease, recordHumanApproval, type HumanApproval } from "@/agents/handoff/human-approval";
+import { canConsume, extractHandoffs, formatHandoffBlock, validateOutgoing } from "@/agents/handoff/protocol";
 import { screenIncomingMessage } from "@/agents/runtime/handoff-gate";
-import { curatorApproval, governorHandoff } from "./fixtures";
+import { curatorApproval, FUTURE_PREVIEWS, governorHandoff } from "./fixtures";
 
 describe("handoff validation", () => {
   it("accepts a complete, consistent envelope", () => {
@@ -115,12 +109,12 @@ describe("role-order enforcement", () => {
 });
 
 describe("Release Governor human-approval requirement", () => {
-  const approval: HumanApproval = {
-    caseId: "NF-DEMO-0001",
-    artifactId: "placement:luv-scene-1:v1",
-    approved: true,
-    approverName: "Demo reviewer",
-    approvedAt: "2026-10-14T12:30:00Z",
+  const options = { previews: FUTURE_PREVIEWS };
+  const owner = { id: "owner-user", type: "User", role: null };
+  const approve = (handoff = governorHandoff()) => {
+    const r = recordHumanApproval({ sender: owner, ownerUserId: owner.id, approverName: "Demo reviewer", governorHandoff: handoff, previews: FUTURE_PREVIEWS });
+    assert.equal(r.ok, true, r.ok ? "" : r.errors.join(" "));
+    return (r as { ok: true; value: HumanApproval }).value;
   };
 
   it("has no governor decision that means release", () => {
@@ -129,25 +123,25 @@ describe("Release Governor human-approval requirement", () => {
   });
 
   it("cannot release on the governor's approval alone", () => {
-    const result = canRelease(governorHandoff(), null);
+    const result = canRelease(governorHandoff(), null, options);
     assert.equal(result.ok, false);
     if (!result.ok) assert.ok(result.errors.includes("Explicit human approval is required before release."));
   });
 
-  it("releases only with matching explicit human approval", () => {
-    assert.equal(canRelease(governorHandoff(), approval).ok, true);
-    assert.equal(canRelease(governorHandoff(), { ...approval, artifactId: "placement:other" }).ok, false);
-    assert.equal(canRelease(governorHandoff(), { ...approval, approverName: " " }).ok, false);
+  it("releases only with matching, recorded human approval", () => {
+    const approval = approve();
+    assert.equal(canRelease(governorHandoff(), approval, options).ok, true);
+    const other = governorHandoff({ caseId: "NF-DEMO-0002", artifact: { ...governorHandoff().artifact!, caseId: "NF-DEMO-0002" } as never });
+    assert.equal(canRelease(other, approval, options).ok, false);
   });
 
   it("never releases after revise or stop, even with human approval", () => {
-    const stop = governorHandoff({ decision: "stop", blockers: ["Brand-safety veto"] });
-    const revise = governorHandoff({ decision: "revise", recipientRole: "placement-director", blockers: ["Fix lighting"] });
-    assert.equal(canRelease(stop, approval).ok, false);
-    assert.equal(canRelease(revise, approval).ok, false);
+    const approval = approve();
+    assert.equal(canRelease(governorHandoff({ decision: "stop" }), approval, options).ok, false);
+    assert.equal(canRelease(governorHandoff({ decision: "revise" }), approval, options).ok, false);
   });
 
   it("cannot treat another role's handoff as a release decision", () => {
-    assert.equal(canRelease(curatorApproval({ caseId: approval.caseId }), approval).ok, false);
+    assert.equal(canRelease(curatorApproval(), approve(), options).ok, false);
   });
 });

@@ -1,5 +1,6 @@
 import { HUMAN_REVIEWER, type AgentRole, type HandoffParty } from "@/agents/config/roles";
 import { validateHandoff, type HandoffDecision, type HandoffEnvelope, type ValidationResult } from "./envelope";
+import type { PreviewRegistry } from "./governor-review";
 
 /**
  * Allowed handoffs: sender + decision → the only valid recipient
@@ -24,8 +25,8 @@ export function expectedRecipient(sender: AgentRole, decision: HandoffDecision):
 }
 
 /** Full check for an envelope about to be sent: structure plus role order. */
-export function validateOutgoing(input: unknown): ValidationResult<HandoffEnvelope> {
-  const result = validateHandoff(input);
+export function validateOutgoing(input: unknown, options: { previews?: PreviewRegistry } = {}): ValidationResult<HandoffEnvelope> {
+  const result = validateHandoff(input, options);
   if (!result.ok) return result;
   const { senderRole, decision, recipientRole } = result.value;
   const expected = expectedRecipient(senderRole, decision);
@@ -89,40 +90,6 @@ export function canConsume(
     return { ok: false, errors: [`${consumer} does not accept "${env.decision}" handoffs from ${env.senderRole}.`] };
   }
   return result;
-}
-
-/** A recorded human decision. Only a human can create one; no agent decision maps to it. */
-export type HumanApproval = {
-  caseId: string;
-  artifactId: string;
-  approved: true;
-  approverName: string;
-  approvedAt: string;
-};
-
-/**
- * Release requires both a Release Governor "approve-for-human-review" with no
- * blockers and an explicit human approval for the same case and artifact.
- * The governor alone can never release (§4.5, §5, §7.1).
- */
-export function canRelease(governorHandoff: unknown, humanApproval: HumanApproval | null | undefined): ValidationResult<true> {
-  const result = validateOutgoing(governorHandoff);
-  if (!result.ok) return result;
-  const env = result.value;
-  const errors: string[] = [];
-  if (env.senderRole !== "release-governor") errors.push("Only a Release Governor handoff can lead to release.");
-  if (env.decision !== "approve-for-human-review") errors.push(`Governor decision is "${env.decision}", not approve-for-human-review.`);
-  if (!humanApproval) {
-    errors.push("Explicit human approval is required before release.");
-  } else {
-    if (humanApproval.approved !== true) errors.push("Human approval was not granted.");
-    if (humanApproval.caseId !== env.caseId || humanApproval.artifactId !== env.artifactId) {
-      errors.push("Human approval does not match this case and artifact.");
-    }
-    if (!humanApproval.approverName?.trim()) errors.push("Human approval must name the approver.");
-    if (Number.isNaN(Date.parse(humanApproval.approvedAt))) errors.push("Human approval needs a valid timestamp.");
-  }
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, value: true };
 }
 
 /** Fenced block that carries an envelope inside a BAND chat message. */

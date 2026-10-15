@@ -3,6 +3,8 @@ import { DefaultPreprocessor, HistoryProvider } from "@band-ai/sdk/runtime";
 import type { AgentRole } from "@/agents/config/roles";
 import { ACCEPTED_INPUTS, canConsume, extractHandoffs } from "@/agents/handoff/protocol";
 import { checkHandoffTimestamp } from "@/agents/handoff/timestamps";
+import type { HandoffEnvelope } from "@/agents/handoff/envelope";
+import { recordAcceptedPlan } from "./accepted-plans";
 
 type DefaultProcess = DefaultPreprocessor["process"];
 
@@ -130,6 +132,12 @@ export class HandoffGate {
         }
       }
       return null;
+    }
+    // Keep the authenticated plan for the Governor's tools (see accepted-plans.ts).
+    if (this.consumer === "release-governor") {
+      const [block] = extractHandoffs(message.content);
+      const artifact = block?.ok ? (block.value as HandoffEnvelope).artifact : undefined;
+      if (artifact?.kind === "placement-plan") recordAcceptedPlan(artifact);
     }
     const isolate = !ACCEPTED_INPUTS[this.consumer].humanRequest;
     this.logger.info("Accepted message at handoff boundary", {

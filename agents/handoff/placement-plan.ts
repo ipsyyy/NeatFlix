@@ -109,7 +109,7 @@ function clauseTail(before: string): string {
  * never excuses it. `allowFuture` also excuses a modal directly before the
  * anchor ("will be rendered").
  */
-function affirmed(text: string, pattern: RegExp, options: { anchor?: RegExp; allowFuture?: boolean } = {}): string[] {
+export function affirmed(text: string, pattern: RegExp, options: { anchor?: RegExp; allowFuture?: boolean } = {}): string[] {
   const found: string[] = [];
   const sentences = text.split(/(?<=[.;!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 0);
   for (const sentence of sentences) {

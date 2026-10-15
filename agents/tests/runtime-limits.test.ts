@@ -4,6 +4,7 @@ import {
   AGENT_MAX_TOOL_ROUNDS,
   DEFAULT_TURN_TIMEOUT_MS,
   PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS,
+  RELEASE_GOVERNOR_TURN_TIMEOUT_MS,
   turnLimitsFor,
 } from "@/agents/config/model";
 import { AGENT_ROLES } from "@/agents/config/roles";
@@ -14,13 +15,16 @@ import { toolsForRole } from "@/agents/tools/evidence-tools";
 import { curatorApproval, validPlacementPlan } from "./fixtures";
 
 describe("role-specific turn limits", () => {
-  it("gives only Placement Director the 12-minute turn budget", () => {
+  it("gives Placement Director 12 minutes, Release Governor 10, and every other role the 5-minute default", () => {
     assert.equal(PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS, 12 * 60_000);
     assert.equal(turnLimitsFor("placement-director").turnTimeoutMs, PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS);
-    for (const role of AGENT_ROLES.filter((r) => r !== "placement-director")) {
+    assert.equal(RELEASE_GOVERNOR_TURN_TIMEOUT_MS, 10 * 60_000);
+    assert.equal(turnLimitsFor("release-governor").turnTimeoutMs, RELEASE_GOVERNOR_TURN_TIMEOUT_MS);
+    for (const role of ["content-curator", "scene-scout", "campaign-matcher"] as const) {
       assert.equal(turnLimitsFor(role).turnTimeoutMs, DEFAULT_TURN_TIMEOUT_MS, role);
     }
     assert.equal(DEFAULT_TURN_TIMEOUT_MS, 5 * 60_000);
+    assert.equal(AGENT_ROLES.length, 5, "every role is covered above");
   });
 
   it("keeps a finite repair-round limit that fits inside the Placement Director budget", () => {
@@ -30,6 +34,8 @@ describe("role-specific turn limits", () => {
     }
     // A full plan draft took up to about 68 s per round in R3; every allowed round must fit.
     assert.ok(PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS >= AGENT_MAX_TOOL_ROUNDS * 75_000);
+    // A full review draft took up to about 56 s per round in GOVERNOR-R1.
+    assert.ok(RELEASE_GOVERNOR_TURN_TIMEOUT_MS >= AGENT_MAX_TOOL_ROUNDS * 60_000);
   });
 });
 

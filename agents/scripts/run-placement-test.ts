@@ -324,7 +324,7 @@ async function main(): Promise<number> {
   const blocked = events.filter((e) => /Blocked|Suppressed/.test(e.kind));
   const firstClaude = claudeCalls[0];
   const envelope = reply ? envelopeOf(reply.content) : null;
-  const plan = envelope?.artifact;
+  const plan = envelope?.artifact?.kind === "placement-plan" ? envelope.artifact : undefined;
   const readable = reply ? readableOf(reply.content) : "";
   const replyFresh = envelope && reply ? checkHandoffTimestamp(envelope.timestamp, { now: new Date(), postedAt: new Date(reply.at) }) : null;
   const planErrors = plan ? validatePlacementPlan(plan, envelope?.caseId) : ["no plan"];

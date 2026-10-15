@@ -22,10 +22,16 @@ export const DEFAULT_TURN_TIMEOUT_MS = 5 * 60_000;
  */
 export const PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS = 12 * 60_000;
 
-/** Per-role turn limits. Only Placement Director gets the longer budget. */
+/**
+ * Release Governor's turn budget. A full typed review draft took about 40–56 s
+ * per tool round live, and one turn used 3 min 58 s of the default, so the
+ * Governor gets more room. AGENT_MAX_TOOL_ROUNDS still bounds repair loops.
+ */
+export const RELEASE_GOVERNOR_TURN_TIMEOUT_MS = 10 * 60_000;
+
+/** Per-role turn limits. Only Placement Director and Release Governor get longer budgets. */
 export function turnLimitsFor(role: AgentRole): { turnTimeoutMs: number; maxToolRounds: number } {
-  return {
-    turnTimeoutMs: role === "placement-director" ? PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS : DEFAULT_TURN_TIMEOUT_MS,
-    maxToolRounds: AGENT_MAX_TOOL_ROUNDS,
-  };
+  const turnTimeoutMs =
+    role === "placement-director" ? PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS : role === "release-governor" ? RELEASE_GOVERNOR_TURN_TIMEOUT_MS : DEFAULT_TURN_TIMEOUT_MS;
+  return { turnTimeoutMs, maxToolRounds: AGENT_MAX_TOOL_ROUNDS };
 }

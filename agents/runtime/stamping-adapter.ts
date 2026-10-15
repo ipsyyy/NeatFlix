@@ -12,7 +12,7 @@ const SEND_TOOL = "band_send_message";
 const BLOCK = new RegExp("```" + HANDOFF_FENCE + "\\s*\\n[\\s\\S]*?\\n```", "g");
 
 /** Who is posting, so mentions can be checked against the room (see mentions.ts). */
-export type MentionPolicy = { role: AgentRole; roleByAgentId: ReadonlyMap<string, AgentRole> };
+export type MentionPolicy = { role: AgentRole; roleByAgentId: ReadonlyMap<string, AgentRole>; humanOnly?: boolean };
 
 /**
  * Platform tools the model may call besides band_send_message. Both are
@@ -71,6 +71,7 @@ export function withHandoffStamping<T extends object>(
       readable: content.replace(BLOCK, ""),
       members,
       roleByAgentId: policy.roleByAgentId,
+      humanOnly: policy.humanOnly,
     });
     return errors.length > 0 ? { errors } : { errors, mentions: canonicalMentions(list, members) };
   };

@@ -1,5 +1,6 @@
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import { requiredDisclosures } from "@/agents/handoff/output-rules";
+import { STAND_IN_DISCLOSURE } from "@/agents/handoff/placement-plan";
 import { HANDOFF_FENCE, extractHandoffs } from "@/agents/handoff/protocol";
 import { validateDraft } from "@/agents/handoff/stamp";
 
@@ -38,10 +39,12 @@ export function buildRedelivery(options: {
     };
   }
 
+  // A placement plan's result must keep its stand-in and unexecuted-prompt statements (output-rules.ts).
+  const planStatements = envelope.artifact?.kind === "placement-plan" ? ["Both generation prompts have not been executed.", STAND_IN_DISCLOSURE] : [];
   const disclosure =
     `${options.recipientMention} Re-delivery of the ${envelope.senderRole} handoff from message ${options.originalMessageId}, ` +
     `unchanged except for a fresh runtime timestamp. Case ${envelope.caseId}, ${envelope.artifactId}, decision ${envelope.decision}.` +
-    requiredDisclosures(envelope).map((sentence) => ` ${sentence}`).join("");
+    [...planStatements, ...requiredDisclosures(envelope)].map((sentence) => ` ${sentence}`).join("");
   const block_ = "```" + HANDOFF_FENCE + "\n" + JSON.stringify(envelope, null, 2) + "\n```";
   return { ok: true, draftContent: `${disclosure}\n\n${block_}`, envelope };
 }
