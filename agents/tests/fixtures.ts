@@ -13,7 +13,8 @@ export function curatorApproval(overrides: Partial<HandoffEnvelope> = {}): Hando
     assumptions: [],
     blockers: [],
     nextAction: "Evaluate candidate scenes for The Hate Hypothesis.",
-    timestamp: "2026-10-14T12:00:00Z",
+    // Runtime-style stamp: current UTC, as the send boundary would attach it.
+    timestamp: new Date().toISOString(),
     ...overrides,
   };
 }

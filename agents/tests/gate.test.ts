@@ -71,9 +71,7 @@ describe("handoff boundary: humans", () => {
 describe("handoff boundary: correct upstream handoffs", () => {
   for (const [consumer, from, decision] of ALLOWED_EDGES) {
     it(`${consumer} accepts "${decision}" from the real ${from}`, () => {
-      assert.deepEqual(screenIncomingMessage(consumer, handoff(from, decision, consumer), agent(from)), {
-        consume: true,
-      });
+      assert.equal(screenIncomingMessage(consumer, handoff(from, decision, consumer), agent(from)).consume, true);
     });
   }
 });

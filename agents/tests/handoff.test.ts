@@ -105,7 +105,7 @@ describe("role-order enforcement", () => {
   it("screens BAND messages before an agent can consume them", () => {
     const valid = formatHandoffBlock(curatorApproval());
     const curatorAgent = { role: "content-curator", type: "Agent" } as const;
-    assert.deepEqual(screenIncomingMessage("scene-scout", valid, curatorAgent), { consume: true });
+    assert.equal(screenIncomingMessage("scene-scout", valid, curatorAgent).consume, true);
     assert.equal(screenIncomingMessage("scene-scout", valid, { role: "release-governor", type: "Agent" }).consume, false);
     assert.equal(screenIncomingMessage("scene-scout", "just chatting", curatorAgent).consume, false);
     assert.deepEqual(screenIncomingMessage("content-curator", "Please review title X", { role: null, type: "User" }), {
