@@ -22,9 +22,9 @@ function pdHandoff(plan: unknown = validPlacementPlan(), over: Partial<HandoffEn
     senderRole: "placement-director",
     recipientRole: "release-governor",
     decision: "instructions-ready",
-    artifactId: "plan:daybreak-cold-brew:hh-scene-1:v1",
+    artifactId: "plan:daybreak-cold-brew:luv-scene-1:v1",
     evidence: [
-      { claim: "Daybreak Cold Brew was recommended for hh-scene-1.", source: "handoff.decision" },
+      { claim: "Daybreak Cold Brew was recommended for luv-scene-1.", source: "handoff.decision" },
       { claim: "The lab desk is clear and in frame.", source: "nativeframe_get_selected_scene.scene.surface" },
     ],
     nextAction: "Review the placement plan before any generation step.",
@@ -34,7 +34,7 @@ function pdHandoff(plan: unknown = validPlacementPlan(), over: Partial<HandoffEn
 }
 
 const readable =
-  `@ipchoudhury Placement plan for Daybreak Cold Brew on the visible lab desk in hh-scene-1 (00:42–00:47). ` +
+  `@ipchoudhury Placement plan for Daybreak Cold Brew on the visible lab desk in luv-scene-1 (00:42–00:47). ` +
   `Both generation prompts have not been executed. ${STAND_IN_DISCLOSURE} ${RELEASE_GOVERNOR_DISCLOSURE}`;
 const message = (env: HandoffEnvelope, text = readable) => `${text}\n\n${formatHandoffBlock(env)}`;
 const plan = (over: Partial<PlacementPlan>) => validPlacementPlan(over);
@@ -58,7 +58,7 @@ describe("placement plan: valid plan", () => {
 describe("placement plan: rejections", () => {
   it("rejects the wrong surface", () => {
     assert.ok(validatePlacementPlan(plan({ placement: { ...base.placement, region: "café table" } })).some((e) => /region/.test(e)));
-    assert.ok(validatePlacementPlan(plan({ scene: { ...base.scene, sceneId: "hh-scene-2", name: "Campus café conversation", startSeconds: 78, endSeconds: 83 } })).some((e) => /lab desk/.test(e)));
+    assert.ok(validatePlacementPlan(plan({ scene: { ...base.scene, sceneId: "luv-scene-2", name: "Campus café conversation", startSeconds: 78, endSeconds: 83 } })).some((e) => /lab desk/.test(e)));
   });
 
   it("rejects hand interaction", () => {
@@ -118,9 +118,9 @@ describe("placement plan: rejections", () => {
   });
 
   it("rejects the wrong upstream role reaching Placement Director", () => {
-    const fromScout = formatHandoffBlock(curatorApproval({ senderRole: "scene-scout", recipientRole: "placement-director", decision: "select", artifactId: "scene:hh-scene-1" }));
+    const fromScout = formatHandoffBlock(curatorApproval({ senderRole: "scene-scout", recipientRole: "placement-director", decision: "select", artifactId: "scene:luv-scene-1" }));
     assert.equal(screenIncomingMessage("placement-director", fromScout, { role: "scene-scout", type: "Agent" }).consume, false);
-    const matcher = formatHandoffBlock(curatorApproval({ senderRole: "campaign-matcher", recipientRole: "placement-director", decision: "recommend", artifactId: "match:daybreak-cold-brew:hh-scene-1" }));
+    const matcher = formatHandoffBlock(curatorApproval({ senderRole: "campaign-matcher", recipientRole: "placement-director", decision: "recommend", artifactId: "match:daybreak-cold-brew:luv-scene-1" }));
     assert.equal(screenIncomingMessage("placement-director", matcher, { role: "campaign-matcher", type: "Agent" }).consume, true);
     assert.equal(screenIncomingMessage("placement-director", matcher, { role: "content-curator", type: "Agent" }).consume, false);
     assert.equal(validateHandoff(curatorApproval({ artifact: base })).ok, false, "only Placement Director may carry an artifact");
@@ -205,8 +205,8 @@ describe("Placement Director evidence tools and isolation", () => {
 
   it("returns real artwork metadata and says it is a stand-in, not a scene frame", async () => {
     const tool = toolsForRole("placement-director").find((t) => t.name === "nativeframe_get_source_artwork")!;
-    const r = (await tool.handler({ titleId: "hate-hypothesis" })) as Record<string, unknown>;
-    assert.equal(r.src, "/artwork/the-hate-hypothesis-hero.png");
+    const r = (await tool.handler({ titleId: "luv-hypothesis" })) as Record<string, unknown>;
+    assert.equal(r.src, "/artwork/the-luv-hypothesis-hero.png");
     assert.equal(r.widthPx, 1672);
     assert.equal(r.heightPx, 941);
     assert.equal(r.isSceneFrame, false);
@@ -215,7 +215,7 @@ describe("Placement Director evidence tools and isolation", () => {
 
   it("withholds room history when Placement Director accepts a Campaign Matcher handoff", async () => {
     const g = new HandoffGate("placement-director", new Map([["cm-id", "campaign-matcher"]]), quiet);
-    const content = formatHandoffBlock(curatorApproval({ senderRole: "campaign-matcher", recipientRole: "placement-director", decision: "recommend", artifactId: "match:daybreak-cold-brew:hh-scene-1" }));
+    const content = formatHandoffBlock(curatorApproval({ senderRole: "campaign-matcher", recipientRole: "placement-director", decision: "recommend", artifactId: "match:daybreak-cold-brew:luv-scene-1" }));
     const input = {
       message: { id: "m", roomId: "r", content, senderId: "cm-id", senderType: "Agent", senderName: null, messageType: "text", metadata: {}, createdAt: new Date() },
       history: new HistoryProvider([{ id: "old", content: "Content Curator said rights are cleared." }]),
@@ -230,7 +230,7 @@ describe("Placement Director evidence tools and isolation", () => {
       senderRole: "campaign-matcher",
       recipientRole: "placement-director",
       decision: "recommend",
-      artifactId: "match:daybreak-cold-brew:hh-scene-1",
+      artifactId: "match:daybreak-cold-brew:luv-scene-1",
       evidence: [{ claim: "All checks pass.", source: "nativeframe_evaluate_campaign_match.decision" }],
     });
     const r = buildRedelivery({

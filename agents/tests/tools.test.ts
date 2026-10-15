@@ -23,15 +23,15 @@ describe("evidence tools", () => {
     ]);
   });
 
-  it("returns The Hate Hypothesis catalogue record with its eligibility", async () => {
-    const result = (await tool("content-curator", "nativeframe_get_title_record").handler({ title: "The Hate Hypothesis" })) as {
+  it("returns The LUV Hypothesis catalogue record with its eligibility", async () => {
+    const result = (await tool("content-curator", "nativeframe_get_title_record").handler({ title: "The LUV Hypothesis" })) as {
       found: boolean;
       record: { id: string; rightsStatus: string; pipelineEnabled: boolean };
       eligibility: { eligible: boolean; placementReviewAllowed: boolean };
       source: string;
     };
     assert.equal(result.found, true);
-    assert.equal(result.record.id, "hate-hypothesis");
+    assert.equal(result.record.id, "luv-hypothesis");
     assert.equal(result.record.rightsStatus, "cleared");
     assert.equal(result.eligibility.placementReviewAllowed, true);
     assert.match(result.source, /Demo fixture/);
@@ -46,11 +46,11 @@ describe("evidence tools", () => {
   });
 
   it("returns the recorded scene candidates, including the Lab desk discussion", async () => {
-    const result = (await tool("scene-scout", "nativeframe_get_scene_candidates").handler({ titleId: "hate-hypothesis" })) as {
+    const result = (await tool("scene-scout", "nativeframe_get_scene_candidates").handler({ titleId: "luv-hypothesis" })) as {
       found: boolean;
       scenes: { id: string; name: string; startSeconds: number; endSeconds: number }[];
     };
-    const lab = result.scenes.find((s) => s.id === "hh-scene-1");
+    const lab = result.scenes.find((s) => s.id === "luv-scene-1");
     assert.equal(result.found, true);
     assert.deepEqual(lab && { name: lab.name, start: lab.startSeconds, end: lab.endSeconds }, {
       name: "Lab desk discussion",

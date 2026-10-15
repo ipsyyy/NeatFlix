@@ -7,11 +7,11 @@
 export type Genre =
   | "Romance"
   | "Romantic comedy"
-  | "Sports romance"
   | "Workplace comedy"
   | "Sports comedy"
   | "Crime dramedy"
   | "Fantasy satire"
+  | "Heist caper"
   | "Action thriller"
   | "Survival thriller"
   | "True crime";

@@ -3,7 +3,7 @@
  *
  * 1. Creates (or reuses) the target room, owned by Scene Scout, containing exactly
  *    the human BAND User, NF Scene Scout, and NF Campaign Matcher.
- * 2. Reads Scene Scout's already-validated hh-scene-1 selection from the source
+ * 2. Reads Scene Scout's already-validated luv-scene-1 selection from the source
  *    room and, through Scene Scout's own BAND identity, re-delivers it unchanged
  *    except for a trusted timestamp attached immediately before the BAND POST and
  *    checked against BAND's posting time. Claude does not regenerate it.

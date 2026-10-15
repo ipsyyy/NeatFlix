@@ -117,7 +117,7 @@ describe("role-order enforcement", () => {
 describe("Release Governor human-approval requirement", () => {
   const approval: HumanApproval = {
     caseId: "NF-DEMO-0001",
-    artifactId: "placement:hh-scene-1:v1",
+    artifactId: "placement:luv-scene-1:v1",
     approved: true,
     approverName: "Demo reviewer",
     approvedAt: "2026-10-14T12:30:00Z",

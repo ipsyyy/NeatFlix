@@ -380,8 +380,8 @@ async function main(): Promise<number> {
       replies.length === 1 && extractHandoffs(reply?.content ?? "").length === 1 && envelope?.senderRole === "placement-director" &&
         envelope.recipientRole === "release-governor" && envelope.decision === "instructions-ready" && envelope.blockers.length === 0 && readable.length > 0],
     ["Typed placement plan is present, schema-valid, and visible in the BAND message", Boolean(plan) && planErrors.length === 0 && Boolean(reply?.content.includes('"kind": "placement-plan"'))],
-    ["Plan: hh-scene-1 00:42–00:47, Daybreak Cold Brew branded takeaway cup, visible lab desk, stationary, no hand interaction",
-      plan?.scene.sceneId === "hh-scene-1" && plan.scene.startSeconds === 42 && plan.scene.endSeconds === 47 && plan.product.product === "Daybreak Cold Brew" &&
+    ["Plan: luv-scene-1 00:42–00:47, Daybreak Cold Brew branded takeaway cup, visible lab desk, stationary, no hand interaction",
+      plan?.scene.sceneId === "luv-scene-1" && plan.scene.startSeconds === 42 && plan.scene.endSeconds === 47 && plan.product.product === "Daybreak Cold Brew" &&
         plan.product.format === "Branded takeaway coffee cup" && plan.placement.region.toLowerCase() === PLACEMENT_REGION && plan.placement.motion === "stationary" && plan.placement.handInteraction === "none"],
     ["Plan has scale, perspective, lighting, shadow, color guidance; face, body, background, composition preservation; brand limits; negative constraints",
       Boolean(plan) && Object.values(plan!.guidance).every((v) => String(v).trim().length > 0) && Object.values(plan!.preservation).every((v) => (v as string[]).length > 0) &&

@@ -39,7 +39,7 @@ function fakeTools() {
   return { posts, wrapped: withHandoffStamping(tools, quiet, () => NOW) };
 }
 
-const result = "@ipchoudhury/nf-scene-scout The Hate Hypothesis is eligible.\n\n" + formatHandoffBlock(curatorApproval());
+const result = "@ipchoudhury/nf-scene-scout The LUV Hypothesis is eligible.\n\n" + formatHandoffBlock(curatorApproval());
 
 describe("send boundary: thought and status events cannot be posted", () => {
   it("refuses band_send_event for thoughts, status, and tasks", async () => {
@@ -78,7 +78,7 @@ describe("send boundary: only the result with its validated handoff is posted", 
     const [block] = extractHandoffs(posts[0].content);
     assert.ok(block.ok);
     assert.equal((block.value as HandoffEnvelope).timestamp, NOW.toISOString());
-    assert.ok(posts[0].content.startsWith("@ipchoudhury/nf-scene-scout The Hate Hypothesis is eligible."));
+    assert.ok(posts[0].content.startsWith("@ipchoudhury/nf-scene-scout The LUV Hypothesis is eligible."));
   });
 
   it("refuses plain text, several handoffs, and invalid handoffs", async () => {
@@ -167,7 +167,7 @@ describe("evidence isolation at the handoff gate", () => {
   }
 
   it("withholds room history from a downstream role, so only the handoff reaches Claude", async () => {
-    const scoutSelect = formatHandoffBlock(curatorApproval({ senderRole: "scene-scout", recipientRole: "campaign-matcher", decision: "select", artifactId: "scene:hh-scene-1" }));
+    const scoutSelect = formatHandoffBlock(curatorApproval({ senderRole: "scene-scout", recipientRole: "campaign-matcher", decision: "select", artifactId: "scene:luv-scene-1" }));
     const { result, info } = await deliverWithHistory("campaign-matcher", "ss-id", "Agent", scoutSelect);
     assert.ok(result);
     assert.equal(result.history.length, 0);
@@ -176,7 +176,7 @@ describe("evidence isolation at the handoff gate", () => {
   });
 
   it("keeps history for the Content Curator, which starts the case", async () => {
-    const { result } = await deliverWithHistory("content-curator", "user-1", "User", "Review The Hate Hypothesis.");
+    const { result } = await deliverWithHistory("content-curator", "user-1", "User", "Review The LUV Hypothesis.");
     assert.ok(result);
     assert.equal(result.history.length, 2);
   });

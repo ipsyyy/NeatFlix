@@ -32,7 +32,7 @@ const pdEnvelope = (): HandoffEnvelope =>
     senderRole: "placement-director",
     recipientRole: "release-governor",
     decision: "instructions-ready",
-    artifactId: "plan:daybreak-cold-brew:hh-scene-1:v1",
+    artifactId: "plan:daybreak-cold-brew:luv-scene-1:v1",
     evidence: [{ claim: "The lab desk is clear.", source: "nativeframe_get_selected_scene.scene.surface" }],
     artifact: validPlacementPlan(),
   });

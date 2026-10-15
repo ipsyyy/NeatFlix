@@ -61,7 +61,7 @@ const getSceneCandidates: CustomToolDef = {
   name: "nativeframe_get_scene_candidates",
   description:
     "List the candidate scenes recorded for a title, with timestamps, tone, camera, surface, natural placement opportunities, and guardrail checks with evidence.",
-  schema: z.object({ titleId: z.string().min(1).max(120).describe("Catalogue title ID, e.g. hate-hypothesis") }),
+  schema: z.object({ titleId: z.string().min(1).max(120).describe("Catalogue title ID, e.g. luv-hypothesis") }),
   handler: (args) => {
     const title = findTitle(String(args.titleId));
     const review = title ? getSceneReview(title.id) : undefined;
@@ -107,7 +107,7 @@ const AUDIENCE_NOTE =
 const getSelectedScene: CustomToolDef = {
   name: "nativeframe_get_selected_scene",
   description:
-    "Look up the scene selected in the Scene Scout handoff by scene ID (for example hh-scene-1). Returns its title, timestamps, tone, camera, surface, natural placement objects, and guardrail checks.",
+    "Look up the scene selected in the Scene Scout handoff by scene ID (for example luv-scene-1). Returns its title, timestamps, tone, camera, surface, natural placement objects, and guardrail checks.",
   schema: z.object({ sceneId: z.string().min(1).max(60).describe("Scene ID from the Scene Scout handoff artifactId") }),
   handler: (args) => {
     const found = findScene(String(args.sceneId));
@@ -152,7 +152,7 @@ const evaluateCampaignMatch: CustomToolDef = {
   description:
     "Run NativeFrame's deterministic campaign-matching rules for a scene and campaign: audience (age, tier, premium and minor exclusions, market), scene-to-product fit (object, surface, tone, framing, faces, placement length), and brand safety. Returns every check with evidence and the rule decision.",
   schema: z.object({
-    sceneId: z.string().min(1).max(60).describe("Scene ID, e.g. hh-scene-1"),
+    sceneId: z.string().min(1).max(60).describe("Scene ID, e.g. luv-scene-1"),
     campaignId: z.string().min(1).max(120).describe("Campaign ID, e.g. daybreak-cold-brew"),
   }),
   handler: (args) => {
@@ -189,7 +189,7 @@ const getSourceArtwork: CustomToolDef = {
   name: "nativeframe_get_source_artwork",
   description:
     "Look up the approved source artwork for a title: its file path, real pixel dimensions, description, and framing hints. It is title artwork, not a frame from the selected scene.",
-  schema: z.object({ titleId: z.string().min(1).max(120).describe("Catalogue title ID, e.g. hate-hypothesis") }),
+  schema: z.object({ titleId: z.string().min(1).max(120).describe("Catalogue title ID, e.g. luv-hypothesis") }),
   handler: (args) => {
     const title = findTitle(String(args.titleId));
     if (!title || title.artwork.kind !== "image") return { found: false, message: "No approved image artwork for that title." };

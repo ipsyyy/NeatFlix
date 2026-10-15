@@ -17,8 +17,8 @@ import type { Campaign } from "@/lib/campaigns/types";
 import { curatorApproval } from "./fixtures";
 
 const daybreak = campaigns.find((c) => c.id === "daybreak-cold-brew")!;
-const title = catalogue.find((t) => t.id === "hate-hypothesis")!;
-const scene = (id: string) => getSceneReview("hate-hypothesis")!.scenes.find((s) => s.id === id)!;
+const title = catalogue.find((t) => t.id === "luv-hypothesis")!;
+const scene = (id: string) => getSceneReview("luv-hypothesis")!.scenes.find((s) => s.id === id)!;
 /** A modified copy for a rejection case. The real fixture is never changed. */
 const variant = (overrides: Partial<Campaign>): Campaign => ({ ...structuredClone(daybreak), ...overrides });
 const failing = (m: CampaignMatch) =>
@@ -40,14 +40,14 @@ describe("Campaign Matcher evidence tools", () => {
     ]);
   });
 
-  it("returns the selected hh-scene-1 evidence", async () => {
-    const r = (await run("nativeframe_get_selected_scene", { sceneId: "hh-scene-1" })) as {
+  it("returns the selected luv-scene-1 evidence", async () => {
+    const r = (await run("nativeframe_get_selected_scene", { sceneId: "luv-scene-1" })) as {
       found: boolean;
       titleId: string;
       scene: { name: string; durationSeconds: number; surface: string; opportunities: string[] };
     };
     assert.equal(r.found, true);
-    assert.equal(r.titleId, "hate-hypothesis");
+    assert.equal(r.titleId, "luv-hypothesis");
     assert.equal(r.scene.name, "Lab desk discussion");
     assert.equal(r.scene.durationSeconds, 5);
     assert.match(r.scene.surface, /Lab desk/);
@@ -72,8 +72,8 @@ describe("Campaign Matcher evidence tools", () => {
     assert.match(r.source, /rule-based/);
   });
 
-  it("recommends Daybreak Cold Brew for hh-scene-1 with every check passing", async () => {
-    const r = (await run("nativeframe_evaluate_campaign_match", { sceneId: "hh-scene-1", campaignId: "daybreak-cold-brew" })) as unknown as CampaignMatch & {
+  it("recommends Daybreak Cold Brew for luv-scene-1 with every check passing", async () => {
+    const r = (await run("nativeframe_evaluate_campaign_match", { sceneId: "luv-scene-1", campaignId: "daybreak-cold-brew" })) as unknown as CampaignMatch & {
       productFormat: string;
       surface: string;
     };
@@ -92,9 +92,9 @@ describe("Campaign Matcher evidence tools", () => {
   });
 
   it("reports unknown scenes and campaigns instead of guessing", async () => {
-    assert.equal((await run("nativeframe_get_selected_scene", { sceneId: "hh-scene-9" })).found, false);
+    assert.equal((await run("nativeframe_get_selected_scene", { sceneId: "luv-scene-9" })).found, false);
     assert.equal((await run("nativeframe_get_campaign", { campaignId: "unknown-brand" })).found, false);
-    assert.equal((await run("nativeframe_evaluate_campaign_match", { sceneId: "hh-scene-1", campaignId: "nope" })).found, false);
+    assert.equal((await run("nativeframe_evaluate_campaign_match", { sceneId: "luv-scene-1", campaignId: "nope" })).found, false);
   });
 });
 
@@ -112,7 +112,7 @@ describe("Campaign matching rejections (rules applied to modified copies)", () =
   ];
   for (const [name, campaign, failedCheck] of cases) {
     it(`does not recommend with ${name}`, () => {
-      const match = matchCampaignToScene(campaign, scene("hh-scene-1"), title);
+      const match = matchCampaignToScene(campaign, scene("luv-scene-1"), title);
       assert.equal(match.decision, "not-recommended");
       assert.ok(failing(match).includes(failedCheck), `${failedCheck} should fail; failed: ${failing(match).join(", ")}`);
       assert.deepEqual(match.whyItFits, []);
@@ -120,15 +120,15 @@ describe("Campaign matching rejections (rules applied to modified copies)", () =
   }
 
   it("does not recommend Daybreak for the café scene (no coffee cup) or the rejected hallway scene", () => {
-    assert.equal(matchCampaignToScene(daybreak, scene("hh-scene-2"), title).decision, "not-recommended");
-    const hallway = matchCampaignToScene(daybreak, scene("hh-scene-3"), title);
+    assert.equal(matchCampaignToScene(daybreak, scene("luv-scene-2"), title).decision, "not-recommended");
+    const hallway = matchCampaignToScene(daybreak, scene("luv-scene-3"), title);
     assert.equal(hallway.decision, "not-recommended");
     assert.ok(failing(hallway).includes("Tone match"));
   });
 
   it("does not recommend for a sensitive title", () => {
     const squid = catalogue.find((t) => t.id === "squid-gamed")!;
-    assert.ok(failing(matchCampaignToScene(daybreak, scene("hh-scene-1"), squid)).includes("Title sensitivity"));
+    assert.ok(failing(matchCampaignToScene(daybreak, scene("luv-scene-1"), squid)).includes("Title sensitivity"));
   });
 
   it("leaves the approved Daybreak fixture unchanged", () => {
@@ -143,10 +143,10 @@ describe("Scene Scout re-delivery for Campaign Matcher", () => {
     senderRole: "scene-scout",
     recipientRole: "campaign-matcher",
     decision: "select",
-    artifactId: "scene:hh-scene-1",
+    artifactId: "scene:luv-scene-1",
     timestamp: "2026-10-15T01:28:44.652Z",
   });
-  const original = `@ipchoudhury Selected hh-scene-1.\n\n${formatHandoffBlock(scoutSelect)}`;
+  const original = `@ipchoudhury Selected luv-scene-1.\n\n${formatHandoffBlock(scoutSelect)}`;
   const expect = { senderRole: "scene-scout", recipientRole: "campaign-matcher", decision: "select" } as const;
   const build = (content = original) =>
     buildRedelivery({ originalContent: content, originalMessageId: "479ee01a", expect, recipientMention: "@ipchoudhury/nf-campaign-matcher" });
@@ -238,16 +238,16 @@ describe("Campaign Matcher output rules", () => {
       senderRole: "campaign-matcher",
       recipientRole: "placement-director",
       decision: "recommend",
-      artifactId: "match:daybreak-cold-brew:hh-scene-1",
+      artifactId: "match:daybreak-cold-brew:luv-scene-1",
       evidence: [
-        { claim: "Coffee cup is a natural opportunity in hh-scene-1.", source: "nativeframe_get_selected_scene.scene.opportunities" },
+        { claim: "Coffee cup is a natural opportunity in luv-scene-1.", source: "nativeframe_get_selected_scene.scene.opportunities" },
         { claim: "Every audience, fit, and brand-safety check passes.", source: "nativeframe_evaluate_campaign_match.decision" },
-        { claim: "The Scene Scout selected hh-scene-1.", source: "handoff.artifactId" },
+        { claim: "The Scene Scout selected luv-scene-1.", source: "handoff.artifactId" },
       ],
       assumptions: ["Subscriber records are not connected; audience eligibility is rule-based."],
       ...over,
     });
-  const readable = `@ipchoudhury Daybreak Cold Brew is recommended for hh-scene-1. ${PLACEMENT_DIRECTOR_DISCLOSURE}`;
+  const readable = `@ipchoudhury Daybreak Cold Brew is recommended for luv-scene-1. ${PLACEMENT_DIRECTOR_DISCLOSURE}`;
 
   it("accepts a cited result with the exact disclosure", () => {
     assert.deepEqual(validateResult(matcherHandoff(), readable), []);

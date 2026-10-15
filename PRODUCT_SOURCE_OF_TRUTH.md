@@ -46,19 +46,21 @@ Synthetic experiments and metrics must always be labelled as simulated. The demo
 ### Approved fictional catalogue
 
 1. The Early Sprung — warm workplace romance
-2. The Hate Hypothesis — witty academic romantic comedy
-3. Nearly — corporate investigation and action thriller
+2. The LUV Hypothesis — witty academic romantic comedy
+3. The Day Agent — corporate investigation and action thriller
 4. Moster: The Lizzy Border Story — dark true-crime limited series
-5. Clue Girl — energetic collegiate sports romance
+5. Money Hoist — slick, playful heist caper
 6. The Gentlewoman — stylish crime dramedy
 7. Not Suitable for Professionals — playful young-professional workplace comedy
 8. Chat Powers — upbeat sports comedy
 9. Squid Gamed — intense survival competition thriller
 10. GOT: Game of Tones — grand fantasy satire
 
-The two pipeline-enabled titles are **The Hate Hypothesis** and **Not Suitable for Professionals**.
+The two pipeline-enabled titles are **The LUV Hypothesis** and **Not Suitable for Professionals**.
 
 **Moster: The Lizzy Border Story** and **Squid Gamed** must provide useful unsafe or sensitive-content rejection cases. They are ineligible for placement work because of sensitive tone or brand-safety risk, not merely because of missing metadata.
+
+**Money Hoist** must provide the rights-in-review case. It is a non-violent caper with standard sensitivity, no actor restrictions, and no pipeline processing; it is ineligible for placement work only because its usage rights are still pending review.
 
 ### Catalogue asset and disclaimer rules
 

@@ -44,7 +44,7 @@ describe("handoff boundary: unregistered BAND agents", () => {
 
 describe("handoff boundary: humans", () => {
   it("lets a BAND user start a case through the Content Curator", () => {
-    assert.deepEqual(screenIncomingMessage("content-curator", "Review The Hate Hypothesis for case NF-DEMO-0001.", USER), {
+    assert.deepEqual(screenIncomingMessage("content-curator", "Review The LUV Hypothesis for case NF-DEMO-0001.", USER), {
       consume: true,
     });
   });

@@ -65,8 +65,8 @@ export const catalogue = defineCatalogue([
     pipelineEnabled: false,
   },
   {
-    id: "hate-hypothesis",
-    title: "The Hate Hypothesis",
+    id: "luv-hypothesis",
+    title: "The LUV Hypothesis",
     description:
       "A doctoral researcher sets out to prove her lab rival wrong about everything, including how she feels about him.",
     genre: "Romantic comedy",
@@ -79,7 +79,7 @@ export const catalogue = defineCatalogue([
     durationSeconds: 248,
     artwork: {
       kind: "image",
-      src: "/artwork/the-hate-hypothesis-hero.png",
+      src: "/artwork/the-luv-hypothesis-hero.png",
       alt: "Two researchers debate over an open notebook in a night-time laboratory.",
       fallback: { kind: "placeholder", hues: [168, 260], focus: { x: 28, y: 40 } },
       // Subjects sit right of centre with faces in the upper third.
@@ -89,8 +89,8 @@ export const catalogue = defineCatalogue([
     pipelineEnabled: true,
   },
   {
-    id: "nearly",
-    title: "Nearly",
+    id: "the-day-agent",
+    title: "The Day Agent",
     description:
       "A compliance analyst uncovers a cover-up and races across the city ahead of the people who buried it.",
     genre: "Action thriller",
@@ -127,18 +127,18 @@ export const catalogue = defineCatalogue([
     pipelineEnabled: false,
   },
   {
-    id: "clue-girl",
-    title: "Clue Girl",
+    id: "money-hoist",
+    title: "Money Hoist",
     description:
-      "A college softball captain and the team's new analytics student turn around a losing season and a rivalry.",
-    genre: "Sports romance",
-    tone: "Energetic, flirty",
+      "A crew of overqualified amateurs plans the politest bank job in history: lifting an entire vault off a city rooftop by crane before the morning shift arrives.",
+    genre: "Heist caper",
+    tone: "Slick, playful",
     rating: "TV-14",
     rightsStatus: "pending-review",
     actorRestriction: "none",
     contentSensitivity: { level: "standard" },
     processingStatus: "not-processed",
-    durationSeconds: 211,
+    durationSeconds: 252,
     artwork: { kind: "placeholder", hues: [12, 320], focus: { x: 80, y: 70 } },
     videoUrl: null,
     pipelineEnabled: false,
@@ -235,4 +235,4 @@ export const catalogue = defineCatalogue([
 ]);
 
 /** The title shown in the featured area: the primary pipeline-enabled title. */
-export const FEATURED_TITLE_ID = "hate-hypothesis";
+export const FEATURED_TITLE_ID = "luv-hypothesis";

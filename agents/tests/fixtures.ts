@@ -5,7 +5,7 @@ import type { PlacementPlan } from "@/agents/handoff/placement-plan";
 export function curatorApproval(overrides: Partial<HandoffEnvelope> = {}): HandoffEnvelope {
   return {
     caseId: "NF-DEMO-0001",
-    artifactId: "title:hate-hypothesis",
+    artifactId: "title:luv-hypothesis",
     senderRole: "content-curator",
     recipientRole: "scene-scout",
     decision: "approve",
@@ -13,7 +13,7 @@ export function curatorApproval(overrides: Partial<HandoffEnvelope> = {}): Hando
     confidence: 0.9,
     assumptions: [],
     blockers: [],
-    nextAction: "Evaluate candidate scenes for The Hate Hypothesis.",
+    nextAction: "Evaluate candidate scenes for The LUV Hypothesis.",
     // Runtime-style stamp: current UTC, as the send boundary would attach it.
     timestamp: new Date().toISOString(),
     ...overrides,
@@ -22,7 +22,7 @@ export function curatorApproval(overrides: Partial<HandoffEnvelope> = {}): Hando
 
 export function governorHandoff(overrides: Partial<HandoffEnvelope> = {}): HandoffEnvelope {
   return curatorApproval({
-    artifactId: "placement:hh-scene-1:v1",
+    artifactId: "placement:luv-scene-1:v1",
     senderRole: "release-governor",
     recipientRole: "human-reviewer",
     decision: "approve-for-human-review",
@@ -45,14 +45,14 @@ export function validPlacementPlan(overrides: Partial<PlacementPlan> = {}): Plac
   return {
     kind: "placement-plan",
     version: 1,
-    planId: "plan:daybreak-cold-brew:hh-scene-1:v1",
+    planId: "plan:daybreak-cold-brew:luv-scene-1:v1",
     caseId: "NF-DEMO-0001",
     sourceArtifacts: {
-      matchArtifactId: "match:daybreak-cold-brew:hh-scene-1",
-      sceneArtifactId: "scene:hh-scene-1",
-      titleId: "hate-hypothesis",
+      matchArtifactId: "match:daybreak-cold-brew:luv-scene-1",
+      sceneArtifactId: "scene:luv-scene-1",
+      titleId: "luv-hypothesis",
     },
-    scene: { sceneId: "hh-scene-1", name: "Lab desk discussion", startSeconds: 42, endSeconds: 47 },
+    scene: { sceneId: "luv-scene-1", name: "Lab desk discussion", startSeconds: 42, endSeconds: 47 },
     product: { campaignId: "daybreak-cold-brew", product: "Daybreak Cold Brew", format: "Branded takeaway coffee cup" },
     placement: {
       region: "visible lab desk",
@@ -98,7 +98,7 @@ export function validPlacementPlan(overrides: Partial<PlacementPlan> = {}): Plac
     sourceMedia: {
       kind: "title-artwork-stand-in",
       isSceneFrame: false,
-      src: "/artwork/the-hate-hypothesis-hero.png",
+      src: "/artwork/the-luv-hypothesis-hero.png",
       note: "The current visual is approved title artwork used as a stand-in, not a frame from the selected scene.",
     },
     assumptions: ["No video exists yet; the approved title artwork is a stand-in."],

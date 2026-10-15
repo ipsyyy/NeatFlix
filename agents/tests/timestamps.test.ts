@@ -82,7 +82,7 @@ describe("received handoff timestamps", () => {
 
 describe("runtime-owned timestamps at the send boundary", () => {
   const modelDraft = (timestamp?: string) =>
-    "@ipchoudhury/nf-scene-scout The Hate Hypothesis is approved.\n\n" +
+    "@ipchoudhury/nf-scene-scout The LUV Hypothesis is approved.\n\n" +
     formatHandoffBlock({ ...curatorApproval(), ...(timestamp ? { timestamp } : {}) } as HandoffEnvelope);
 
   it("replaces a model-written timestamp with the runtime time", () => {
@@ -92,7 +92,7 @@ describe("runtime-owned timestamps at the send boundary", () => {
       const [block] = extractHandoffs(result.content);
       assert.ok(block.ok);
       assert.equal((block.value as HandoffEnvelope).timestamp, NOW.toISOString());
-      assert.ok(result.content.startsWith("@ipchoudhury/nf-scene-scout The Hate Hypothesis is approved."), "summary text unchanged");
+      assert.ok(result.content.startsWith("@ipchoudhury/nf-scene-scout The LUV Hypothesis is approved."), "summary text unchanged");
     }
   });
 

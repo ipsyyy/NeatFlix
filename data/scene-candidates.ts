@@ -37,12 +37,12 @@ function defineSceneReview(review: SceneReview): SceneReview {
 
 const sceneReviews: SceneReview[] = [
   defineSceneReview({
-    titleId: "hate-hypothesis",
+    titleId: "luv-hypothesis",
     caseId: "NF-DEMO-0001",
     source: "demo-fixture",
     scenes: [
       {
-        id: "hh-scene-1",
+        id: "luv-scene-1",
         name: "Lab desk discussion",
         startSeconds: 42,
         endSeconds: 47,
@@ -63,7 +63,7 @@ const sceneReviews: SceneReview[] = [
         ],
       },
       {
-        id: "hh-scene-2",
+        id: "luv-scene-2",
         name: "Campus café conversation",
         startSeconds: 78,
         endSeconds: 83,
@@ -84,7 +84,7 @@ const sceneReviews: SceneReview[] = [
         ],
       },
       {
-        id: "hh-scene-3",
+        id: "luv-scene-3",
         name: "Hallway disagreement",
         startSeconds: 124,
         endSeconds: 129,
