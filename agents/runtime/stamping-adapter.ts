@@ -1,11 +1,18 @@
 import { AnthropicAdapter, type AnthropicAdapterOptions } from "@band-ai/sdk";
 import type { Logger } from "@band-ai/sdk/core";
-import { extractHandoffs } from "@/agents/handoff/protocol";
+import type { AgentRole } from "@/agents/config/roles";
+import type { HandoffEnvelope } from "@/agents/handoff/envelope";
+import { checkMentions, type MentionArg, type RoomMember } from "@/agents/handoff/mentions";
+import { HANDOFF_FENCE, extractHandoffs } from "@/agents/handoff/protocol";
 import { stampOutgoingContent } from "@/agents/handoff/stamp";
 
 type AdapterTools = Parameters<AnthropicAdapter["onMessage"]>[1];
 
 const SEND_TOOL = "band_send_message";
+const BLOCK = new RegExp("```" + HANDOFF_FENCE + "\\s*\\n[\\s\\S]*?\\n```", "g");
+
+/** Who is posting, so mentions can be checked against the room (see mentions.ts). */
+export type MentionPolicy = { role: AgentRole; roleByAgentId: ReadonlyMap<string, AgentRole> };
 
 /**
  * Platform tools the model may call besides band_send_message. Both are
@@ -36,8 +43,31 @@ export function handoffSendError(errors: string[]) {
  *   are refused; nothing is posted.
  * - Direct SDK sends: error events and failure reports pass; other events and
  *   notices are suppressed; messages without a valid handoff are refused.
+ * - With a mention policy, a handoff may mention only the human User and its
+ *   downstream recipient when that agent is in the room (checkMentions).
  */
-export function withHandoffStamping<T extends object>(tools: T, logger: Logger, clock: () => Date = () => new Date()): T {
+export function withHandoffStamping<T extends object>(
+  tools: T,
+  logger: Logger,
+  clock: () => Date = () => new Date(),
+  policy?: MentionPolicy,
+): T {
+  const checkPostMentions = async (content: string, mentions: unknown): Promise<string[]> => {
+    if (!policy) return [];
+    const [block] = extractHandoffs(content);
+    if (!block?.ok) return [];
+    const getParticipants = (tools as { getParticipants?: () => Promise<RoomMember[]> }).getParticipants;
+    const members = getParticipants ? await getParticipants.call(tools) : [];
+    return checkMentions({
+      sender: policy.role,
+      envelope: block.value as HandoffEnvelope,
+      mentions: Array.isArray(mentions) ? (mentions as MentionArg[]) : [],
+      readable: content.replace(BLOCK, ""),
+      members,
+      roleByAgentId: policy.roleByAgentId,
+    });
+  };
+
   const prepare = (content: string) => {
     const handoffs = extractHandoffs(content).length;
     if (handoffs !== 1) {
@@ -66,6 +96,11 @@ export function withHandoffStamping<T extends object>(tools: T, logger: Logger, 
               logger.warn("Blocked message at send boundary", { tool: name, errors: prepared.errors });
               return handoffSendError(prepared.errors);
             }
+            const mentionErrors = await checkPostMentions(prepared.content, args?.mentions);
+            if (mentionErrors.length > 0) {
+              logger.warn("Blocked message at send boundary", { tool: name, errors: mentionErrors });
+              return handoffSendError(mentionErrors);
+            }
             return value.call(target, name, { ...args, content: prepared.content });
           }
           if (PERMITTED_PLATFORM_TOOLS.has(name)) return value.call(target, name, args);
@@ -81,8 +116,9 @@ export function withHandoffStamping<T extends object>(tools: T, logger: Logger, 
       if (prop === "sendMessage") {
         return async (content: string, ...rest: unknown[]) => {
           const prepared = prepare(content);
-          if (!prepared.ok) {
-            logger.warn("Blocked message at send boundary", { path: "sendMessage", errors: prepared.errors });
+          const mentionErrors = prepared.ok ? await checkPostMentions(prepared.content, rest[0]) : [];
+          if (!prepared.ok || mentionErrors.length > 0) {
+            logger.warn("Blocked message at send boundary", { path: "sendMessage", errors: prepared.ok ? mentionErrors : prepared.errors });
             throw new Error("Message failed validation at the send boundary and was not sent.");
           }
           return value.call(target, prepared.content, ...rest);
@@ -112,14 +148,17 @@ export function withHandoffStamping<T extends object>(tools: T, logger: Logger, 
 /** BAND's Anthropic adapter with the NativeFrame send boundary applied on every turn. */
 export class StampingAnthropicAdapter extends AnthropicAdapter {
   private readonly stampLogger: Logger;
+  private readonly mentionPolicy?: MentionPolicy;
 
-  constructor(options: AnthropicAdapterOptions & { logger: Logger }) {
-    super(options);
+  constructor(options: AnthropicAdapterOptions & { logger: Logger; mentionPolicy?: MentionPolicy }) {
+    const { mentionPolicy, ...adapterOptions } = options;
+    super(adapterOptions);
     this.stampLogger = options.logger;
+    this.mentionPolicy = mentionPolicy;
   }
 
   override async onMessage(...args: Parameters<AnthropicAdapter["onMessage"]>): ReturnType<AnthropicAdapter["onMessage"]> {
     const [message, tools, ...rest] = args;
-    return super.onMessage(message, withHandoffStamping<AdapterTools>(tools, this.stampLogger), ...rest);
+    return super.onMessage(message, withHandoffStamping<AdapterTools>(tools, this.stampLogger, undefined, this.mentionPolicy), ...rest);
   }
 }

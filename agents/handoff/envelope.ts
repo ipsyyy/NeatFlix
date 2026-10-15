@@ -1,4 +1,5 @@
 import { HUMAN_REVIEWER, isAgentRole, type AgentRole, type HandoffParty } from "@/agents/config/roles";
+import { validatePlacementPlan, type PlacementPlan } from "./placement-plan";
 
 /**
  * Decisions each role may make. Advancing decisions move the case forward;
@@ -38,6 +39,8 @@ export type HandoffEnvelope = {
   nextAction: string;
   /** ISO 8601. */
   timestamp: string;
+  /** Typed artifact the handoff carries. Only Placement Director sends one: its placement plan. */
+  artifact?: PlacementPlan;
 };
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
@@ -71,7 +74,7 @@ export function validateHandoff(input: unknown): ValidationResult<HandoffEnvelop
 
   const allowed = new Set([
     "caseId", "artifactId", "senderRole", "recipientRole", "decision", "evidence",
-    "confidence", "assumptions", "blockers", "nextAction", "timestamp",
+    "confidence", "assumptions", "blockers", "nextAction", "timestamp", "artifact",
   ]);
   for (const key of Object.keys(h)) {
     // Field names are attacker-controlled; bound them before they reach any log.
@@ -118,6 +121,13 @@ export function validateHandoff(input: unknown): ValidationResult<HandoffEnvelop
   if (!isNonEmptyString(h.nextAction)) errors.push("nextAction must be a non-empty string.");
   if (typeof h.timestamp !== "string" || !ISO_8601.test(h.timestamp) || Number.isNaN(Date.parse(h.timestamp))) {
     errors.push("timestamp must be an ISO 8601 date-time.");
+  }
+
+  if ("artifact" in h) {
+    if (h.senderRole !== "placement-director") errors.push("Only Placement Director handoffs may carry an artifact.");
+    else errors.push(...validatePlacementPlan(h.artifact, typeof h.caseId === "string" ? h.caseId : undefined));
+  } else if (h.senderRole === "placement-director" && h.decision === "instructions-ready") {
+    errors.push('Placement Director "instructions-ready" must carry its placement plan as artifact.');
   }
 
   if (errors.length > 0) return { ok: false, errors };

@@ -5,7 +5,7 @@ import { AGENT_ROLES, type AgentRole, type HandoffParty } from "@/agents/config/
 import type { HandoffDecision, HandoffEnvelope } from "@/agents/handoff/envelope";
 import { formatHandoffBlock } from "@/agents/handoff/protocol";
 import { HandoffGate, screenIncomingMessage, type MessageSender } from "@/agents/runtime/handoff-gate";
-import { curatorApproval } from "./fixtures";
+import { curatorApproval, validPlacementPlan } from "./fixtures";
 
 const DOWNSTREAM: AgentRole[] = ["scene-scout", "campaign-matcher", "placement-director", "release-governor"];
 const USER: MessageSender = { role: null, type: "User" };
@@ -14,7 +14,8 @@ const agent = (role: AgentRole): MessageSender => ({ role, type: "Agent" });
 
 function handoff(from: AgentRole, decision: HandoffDecision, to: HandoffParty): string {
   const blockers = ["revise", "reject", "blocked", "stop"].includes(decision) ? ["Correction needed"] : [];
-  return formatHandoffBlock(curatorApproval({ senderRole: from, decision, recipientRole: to, blockers }));
+  const artifact = from === "placement-director" && decision === "instructions-ready" ? { artifact: validPlacementPlan() } : {};
+  return formatHandoffBlock(curatorApproval({ senderRole: from, decision, recipientRole: to, blockers, ...artifact }));
 }
 
 /** Every allowed upstream edge into a downstream role. */

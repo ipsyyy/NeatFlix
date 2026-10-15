@@ -1,4 +1,6 @@
 import type { CustomToolDef } from "@band-ai/sdk";
+import { openSync, readSync, closeSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
 import type { AgentRole } from "@/agents/config/roles";
 import { validateDraft } from "@/agents/handoff/stamp";
@@ -170,11 +172,51 @@ const evaluateCampaignMatch: CustomToolDef = {
   },
 };
 
+/** Reads width and height from a PNG file's IHDR header (no image decoding). */
+function pngDimensions(file: string): { widthPx: number; heightPx: number } | null {
+  const fd = openSync(file, "r");
+  try {
+    const header = Buffer.alloc(24);
+    readSync(fd, header, 0, 24, 0);
+    if (header.toString("latin1", 1, 4) !== "PNG" || header.toString("latin1", 12, 16) !== "IHDR") return null;
+    return { widthPx: header.readUInt32BE(16), heightPx: header.readUInt32BE(20) };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const getSourceArtwork: CustomToolDef = {
+  name: "nativeframe_get_source_artwork",
+  description:
+    "Look up the approved source artwork for a title: its file path, real pixel dimensions, description, and framing hints. It is title artwork, not a frame from the selected scene.",
+  schema: z.object({ titleId: z.string().min(1).max(120).describe("Catalogue title ID, e.g. hate-hypothesis") }),
+  handler: (args) => {
+    const title = findTitle(String(args.titleId));
+    if (!title || title.artwork.kind !== "image") return { found: false, message: "No approved image artwork for that title." };
+    const dims = pngDimensions(resolve(process.cwd(), "public", title.artwork.src.replace(/^\//, "")));
+    return {
+      found: true,
+      source: "Approved original title artwork in the NativeFrame catalogue.",
+      titleId: title.id,
+      kind: "title-artwork-stand-in",
+      isSceneFrame: false,
+      src: title.artwork.src,
+      alt: title.artwork.alt,
+      ...(dims ?? {}),
+      framing: title.artwork.position,
+      note: "This is approved title artwork used as a stand-in. No frame from the selected scene has been extracted, and no video exists yet.",
+    };
+  },
+};
+
 const validateHandoffTool: CustomToolDef = {
   name: "nativeframe_validate_handoff",
   description:
-    "Check a handoff envelope before sending it. Pass the exact JSON object you intend to put in the nativeframe-handoff block, without a timestamp; NativeFrame adds the timestamp when the message is sent. Returns ok or a list of problems to fix.",
-  schema: z.object({ handoffJson: z.string().min(2).max(20000).describe("The handoff envelope as a JSON string") }),
+    "Check a handoff envelope before sending it. Pass the exact JSON object you intend to put in the nativeframe-handoff block, without a timestamp; NativeFrame adds the timestamp when the message is sent. Also pass readableText, the exact text you will send outside the block, so required sentences are checked too. Returns ok or every problem to fix.",
+  schema: z.object({
+    handoffJson: z.string().min(2).max(20000).describe("The handoff envelope as a JSON string"),
+    readableText: z.string().max(8000).optional().describe("The readable message text you will send outside the handoff block"),
+  }),
   handler: (args) => {
     let parsed: unknown;
     try {
@@ -182,7 +224,8 @@ const validateHandoffTool: CustomToolDef = {
     } catch {
       return { ok: false, errors: ["handoffJson is not valid JSON."] };
     }
-    const result = validateDraft(parsed);
+    const readable = typeof args.readableText === "string" ? args.readableText.trim() : undefined;
+    const result = validateDraft(parsed, new Date(), readable);
     return result.ok
       ? { ok: true, note: "Timestamp is attached by NativeFrame at send time." }
       : { ok: false, errors: result.errors };
@@ -198,6 +241,8 @@ export function toolsForRole(role: AgentRole): CustomToolDef[] {
       return [getSceneCandidates, validateHandoffTool];
     case "campaign-matcher":
       return [getSelectedScene, getCampaign, evaluateCampaignMatch, validateHandoffTool];
+    case "placement-director":
+      return [getSelectedScene, getCampaign, getSourceArtwork, validateHandoffTool];
     default:
       return [validateHandoffTool];
   }

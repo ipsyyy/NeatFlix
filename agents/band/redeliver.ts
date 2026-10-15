@@ -1,4 +1,5 @@
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
+import { requiredDisclosures } from "@/agents/handoff/output-rules";
 import { HANDOFF_FENCE, extractHandoffs } from "@/agents/handoff/protocol";
 import { validateDraft } from "@/agents/handoff/stamp";
 
@@ -39,7 +40,8 @@ export function buildRedelivery(options: {
 
   const disclosure =
     `${options.recipientMention} Re-delivery of the ${envelope.senderRole} handoff from message ${options.originalMessageId}, ` +
-    `unchanged except for a fresh runtime timestamp. Case ${envelope.caseId}, ${envelope.artifactId}, decision ${envelope.decision}.`;
+    `unchanged except for a fresh runtime timestamp. Case ${envelope.caseId}, ${envelope.artifactId}, decision ${envelope.decision}.` +
+    requiredDisclosures(envelope).map((sentence) => ` ${sentence}`).join("");
   const block_ = "```" + HANDOFF_FENCE + "\n" + JSON.stringify(envelope, null, 2) + "\n```";
   return { ok: true, draftContent: `${disclosure}\n\n${block_}`, envelope };
 }
