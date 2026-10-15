@@ -4,7 +4,10 @@ import type { AgentRole } from "@/agents/config/roles";
 import { ACCEPTED_INPUTS, canConsume, extractHandoffs } from "@/agents/handoff/protocol";
 import { checkHandoffTimestamp } from "@/agents/handoff/timestamps";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
-import { recordAcceptedPlan } from "./accepted-plans";
+import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "./accepted-plans";
+
+/** Release Governor stores the gate fills: accepted plans, and previews revalidated for them. */
+export type GovernorIntake = { plans?: AcceptedPlanRegistry; previews?: { refresh(planId: string): Promise<unknown> } };
 
 type DefaultProcess = DefaultPreprocessor["process"];
 
@@ -97,6 +100,7 @@ export class HandoffGate {
     private readonly roleByAgentId: ReadonlyMap<string, AgentRole>,
     private readonly logger: Logger,
     private readonly closeRejected?: CloseRejectedMessage,
+    private readonly intake: GovernorIntake = {},
   ) {}
 
   process: DefaultProcess = async (context, event, agentId) => {
@@ -134,10 +138,20 @@ export class HandoffGate {
       return null;
     }
     // Keep the authenticated plan for the Governor's tools (see accepted-plans.ts).
+    // Persisting or refreshing may fail; the plan stays in memory and an
+    // unrefreshed preview cache only keeps approval impossible (fail closed).
     if (this.consumer === "release-governor") {
       const [block] = extractHandoffs(message.content);
       const artifact = block?.ok ? (block.value as HandoffEnvelope).artifact : undefined;
-      if (artifact?.kind === "placement-plan") recordAcceptedPlan(artifact);
+      if (artifact?.kind === "placement-plan") {
+        try {
+          const problems = await (this.intake.plans ?? inMemoryAcceptedPlans).record(artifact);
+          if (problems.length > 0) this.logger.warn("Accepted plan was not persisted", { plan: artifact.planId, problems: problems.length });
+          await this.intake.previews?.refresh(artifact.planId);
+        } catch (error) {
+          this.logger.warn("Could not persist the accepted plan or refresh its preview", { plan: artifact.planId, error: error instanceof Error ? error.name : "unknown" });
+        }
+      }
     }
     const isolate = !ACCEPTED_INPUTS[this.consumer].humanRequest;
     this.logger.info("Accepted message at handoff boundary", {

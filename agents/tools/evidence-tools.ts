@@ -6,7 +6,7 @@ import type { AgentRole } from "@/agents/config/roles";
 import { NO_GENERATED_PREVIEWS, type PreviewRegistry } from "@/agents/handoff/governor-review";
 import { validatePlacementPlan } from "@/agents/handoff/placement-plan";
 import { validateDraft } from "@/agents/handoff/stamp";
-import { acceptedPlan } from "@/agents/runtime/accepted-plans";
+import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
 import { campaigns } from "@/data/campaigns";
 import { catalogue } from "@/data/catalogue";
 import { getSceneReview } from "@/data/scene-candidates";
@@ -212,71 +212,75 @@ const getSourceArtwork: CustomToolDef = {
   },
 };
 
-const validateHandoffTool: CustomToolDef = {
-  name: "nativeframe_validate_handoff",
-  description:
-    "Check a handoff envelope before sending it. Pass the exact JSON object you intend to put in the nativeframe-handoff block, without a timestamp; NativeFrame adds the timestamp when the message is sent. Also pass readableText, the exact text you will send outside the block, so required sentences are checked too. Returns ok or every problem to fix.",
-  schema: z.object({
-    handoffJson: z.string().min(2).max(20000).describe("The handoff envelope as a JSON string"),
-    readableText: z.string().max(8000).optional().describe("The readable message text you will send outside the handoff block"),
-  }),
-  handler: (args) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(String(args.handoffJson));
-    } catch {
-      return { ok: false, errors: ["handoffJson is not valid JSON."] };
-    }
-    const readable = typeof args.readableText === "string" ? args.readableText.trim() : undefined;
-    const result = validateDraft(parsed, new Date(), readable);
-    return result.ok
-      ? { ok: true, note: "Timestamp is attached by NativeFrame at send time." }
-      : { ok: false, errors: result.errors };
-  },
-};
+function validateHandoffTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS): CustomToolDef {
+  return {
+    name: "nativeframe_validate_handoff",
+    description:
+      "Check a handoff envelope before sending it. Pass the exact JSON object you intend to put in the nativeframe-handoff block, without a timestamp; NativeFrame adds the timestamp when the message is sent. Also pass readableText, the exact text you will send outside the block, so required sentences are checked too. Returns ok or every problem to fix.",
+    schema: z.object({
+      handoffJson: z.string().min(2).max(20000).describe("The handoff envelope as a JSON string"),
+      readableText: z.string().max(8000).optional().describe("The readable message text you will send outside the handoff block"),
+    }),
+    handler: (args) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(args.handoffJson));
+      } catch {
+        return { ok: false, errors: ["handoffJson is not valid JSON."] };
+      }
+      const readable = typeof args.readableText === "string" ? args.readableText.trim() : undefined;
+      const result = validateDraft(parsed, new Date(), readable, previews);
+      return result.ok
+        ? { ok: true, note: "Timestamp is attached by NativeFrame at send time." }
+        : { ok: false, errors: result.errors };
+    },
+  };
+}
 
 /**
  * Release Governor: re-runs NativeFrame's deterministic rules over the plan in
  * the Placement Director handoff. Visual checks are "not-evaluated" because no
  * generated preview exists to inspect.
  */
-const checkPlacementPlan: CustomToolDef = {
-  name: "nativeframe_check_placement_plan",
-  description:
-    "Run NativeFrame's deterministic policy checks over the placement plan you received from the authenticated Placement Director, looked up by its planId: plan schema and safety rules, title eligibility, scene guardrails, campaign match, and unexecuted prompts. Visual checks are reported as not-evaluated because no generated preview exists.",
-  schema: z.object({ planId: z.string().min(1).max(200).describe("The planId (handoff artifactId) from the Placement Director handoff") }),
-  handler: (args) => {
-    const accepted = acceptedPlan(String(args.planId).trim());
-    if (!accepted) return { found: false, message: "No authenticated Placement Director plan with that planId was received." };
-    const plan = accepted as unknown as Record<string, unknown>;
-    const get = (o: unknown, k: string) => (typeof o === "object" && o !== null ? (o as Record<string, unknown>)[k] : undefined);
-    const titleId = String(get(plan.sourceArtifacts, "titleId") ?? "");
-    const sceneId = String(get(plan.scene, "sceneId") ?? "");
-    const campaignId = String(get(plan.product, "campaignId") ?? "");
-    const title = findTitle(titleId);
-    const found = findScene(sceneId);
-    const campaign = findCampaign(campaignId);
-    const planErrors = validatePlacementPlan(plan, typeof plan.caseId === "string" ? plan.caseId : undefined);
-    const match = found && campaign ? matchCampaignToScene(campaign, found.scene, found.title) : null;
-    const prompts = get(plan, "prompts");
-    const unexecuted = ["stillImageEdit", "motion"].every((k) => get(get(prompts, k), "status") === "not-executed");
-    const eligible = title ? getEligibility(title).eligible && canStartPlacementReview(title) : false;
-    const outcome = (ok: boolean) => (ok ? "pass" : "fail");
-    return {
-      found: true,
-      source: "Deterministic NativeFrame rules over the authenticated Placement Director plan and demo fixtures. No generated preview exists, so nothing visual was inspected.",
-      subject: { titleId, sceneId, campaignId, planId: plan.planId ?? null },
-      checks: [
-        { id: "plan-rules", category: "policy", outcome: outcome(planErrors.length === 0), detail: planErrors.length === 0 ? "Plan meets every schema and safety rule." : planErrors.slice(0, 10).join(" ") },
-        { id: "title-eligibility", category: "policy", outcome: outcome(eligible), detail: title ? (eligible ? "Title is eligible and pipeline-enabled." : getEligibility(title).reasons.join(" ") || "Title is not pipeline-enabled.") : "Unknown title." },
-        { id: "scene-guardrails", category: "policy", outcome: outcome(Boolean(found?.scene.checks.every((c) => c.outcome === "pass"))), detail: found ? found.scene.checks.map((c) => `${c.id}: ${c.outcome}`).join("; ") : "Unknown scene." },
-        { id: "campaign-match", category: "policy", outcome: outcome(match?.decision === "recommended"), detail: match ? `${match.decision}: ${match.summary}` : "Unknown scene or campaign." },
-        { id: "prompts-not-executed", category: "policy", outcome: outcome(unexecuted), detail: unexecuted ? "Both generation prompts are labelled not-executed." : "A generation prompt is not labelled not-executed." },
-        { id: "preview-visual-quality", category: "technical", outcome: "not-evaluated", detail: "No generated preview exists, so visual quality, naturalness, and preservation of faces and composition cannot be evaluated." },
-      ],
-    };
-  },
-};
+function checkPlacementPlanTool(plans: AcceptedPlanRegistry): CustomToolDef {
+  return {
+    name: "nativeframe_check_placement_plan",
+    description:
+      "Run NativeFrame's deterministic policy checks over the placement plan you received from the authenticated Placement Director, looked up by its planId: plan schema and safety rules, title eligibility, scene guardrails, campaign match, and unexecuted prompts. Visual checks are reported as not-evaluated because no generated preview exists.",
+    schema: z.object({ planId: z.string().min(1).max(200).describe("The planId (handoff artifactId) from the Placement Director handoff") }),
+    handler: async (args) => {
+      const accepted = await plans.lookup(String(args.planId).trim());
+      if (!accepted) return { found: false, message: "No authenticated Placement Director plan with that planId was received." };
+      const plan = accepted as unknown as Record<string, unknown>;
+      const get = (o: unknown, k: string) => (typeof o === "object" && o !== null ? (o as Record<string, unknown>)[k] : undefined);
+      const titleId = String(get(plan.sourceArtifacts, "titleId") ?? "");
+      const sceneId = String(get(plan.scene, "sceneId") ?? "");
+      const campaignId = String(get(plan.product, "campaignId") ?? "");
+      const title = findTitle(titleId);
+      const found = findScene(sceneId);
+      const campaign = findCampaign(campaignId);
+      const planErrors = validatePlacementPlan(plan, typeof plan.caseId === "string" ? plan.caseId : undefined);
+      const match = found && campaign ? matchCampaignToScene(campaign, found.scene, found.title) : null;
+      const prompts = get(plan, "prompts");
+      const unexecuted = ["stillImageEdit", "motion"].every((k) => get(get(prompts, k), "status") === "not-executed");
+      const eligible = title ? getEligibility(title).eligible && canStartPlacementReview(title) : false;
+      const outcome = (ok: boolean) => (ok ? "pass" : "fail");
+      return {
+        found: true,
+        source: "Deterministic NativeFrame rules over the authenticated Placement Director plan and demo fixtures. No generated preview exists, so nothing visual was inspected.",
+        subject: { titleId, sceneId, campaignId, planId: plan.planId ?? null },
+        checks: [
+          { id: "plan-rules", category: "policy", outcome: outcome(planErrors.length === 0), detail: planErrors.length === 0 ? "Plan meets every schema and safety rule." : planErrors.slice(0, 10).join(" ") },
+          { id: "title-eligibility", category: "policy", outcome: outcome(eligible), detail: title ? (eligible ? "Title is eligible and pipeline-enabled." : getEligibility(title).reasons.join(" ") || "Title is not pipeline-enabled.") : "Unknown title." },
+          { id: "scene-guardrails", category: "policy", outcome: outcome(Boolean(found?.scene.checks.every((c) => c.outcome === "pass"))), detail: found ? found.scene.checks.map((c) => `${c.id}: ${c.outcome}`).join("; ") : "Unknown scene." },
+          { id: "campaign-match", category: "policy", outcome: outcome(match?.decision === "recommended"), detail: match ? `${match.decision}: ${match.summary}` : "Unknown scene or campaign." },
+          { id: "prompts-not-executed", category: "policy", outcome: outcome(unexecuted), detail: unexecuted ? "Both generation prompts are labelled not-executed." : "A generation prompt is not labelled not-executed." },
+          { id: "preview-visual-quality", category: "technical", outcome: "not-evaluated", detail: "No generated preview exists, so visual quality, naturalness, and preservation of faces and composition cannot be evaluated." },
+        ],
+      };
+    },
+  };
+}
 
 /** Release Governor: reports whether the media pipeline has recorded a generated preview for a plan. */
 export function previewStatusTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS): CustomToolDef {
@@ -304,20 +308,28 @@ export function previewStatusTool(previews: PreviewRegistry = NO_GENERATED_PREVI
   };
 }
 
+/**
+ * Stores the Release Governor's tools read from: plans accepted at its gate and
+ * the preview registry. Defaults hold no persisted data and no previews.
+ */
+export type GovernorToolStores = { plans?: AcceptedPlanRegistry; previews?: PreviewRegistry };
+
 /** Tools each role may use. Downstream roles get evidence for their own step only. */
-export function toolsForRole(role: AgentRole): CustomToolDef[] {
+export function toolsForRole(role: AgentRole, stores: GovernorToolStores = {}): CustomToolDef[] {
   switch (role) {
     case "content-curator":
-      return [getTitleRecord, validateHandoffTool];
+      return [getTitleRecord, validateHandoffTool()];
     case "scene-scout":
-      return [getSceneCandidates, validateHandoffTool];
+      return [getSceneCandidates, validateHandoffTool()];
     case "campaign-matcher":
-      return [getSelectedScene, getCampaign, evaluateCampaignMatch, validateHandoffTool];
+      return [getSelectedScene, getCampaign, evaluateCampaignMatch, validateHandoffTool()];
     case "placement-director":
-      return [getSelectedScene, getCampaign, getSourceArtwork, validateHandoffTool];
-    case "release-governor":
-      return [checkPlacementPlan, previewStatusTool(), validateHandoffTool];
+      return [getSelectedScene, getCampaign, getSourceArtwork, validateHandoffTool()];
+    case "release-governor": {
+      const previews = stores.previews ?? NO_GENERATED_PREVIEWS;
+      return [checkPlacementPlanTool(stores.plans ?? inMemoryAcceptedPlans), previewStatusTool(previews), validateHandoffTool(previews)];
+    }
     default:
-      return [validateHandoffTool];
+      return [validateHandoffTool()];
   }
 }

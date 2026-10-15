@@ -55,6 +55,14 @@ describe("accidental secret redaction", () => {
     assert.deepEqual(secrets.sort(), [FAKE_ANTHROPIC_KEY, FAKE_BAND_KEY].sort());
   });
 
+  it("redacts a configured Supabase secret key, but not the project URL", () => {
+    // Shaped like a Supabase secret key; not a real credential.
+    const fakeSupabaseKey = "sb_secret_TEST0000notarealkey0000";
+    const secrets = collectSecrets({ SUPABASE_SECRET_KEY: fakeSupabaseKey, SUPABASE_URL: "https://x.supabase.co" });
+    assert.deepEqual(secrets, [fakeSupabaseKey]);
+    assert.ok(!redactSecrets(`request failed for ${fakeSupabaseKey}`, secrets).includes(fakeSupabaseKey));
+  });
+
   it("never places environment values into system prompts", () => {
     process.env.BAND_SCENE_SCOUT_API_KEY = FAKE_BAND_KEY;
     try {

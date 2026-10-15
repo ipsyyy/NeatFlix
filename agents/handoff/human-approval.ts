@@ -21,6 +21,11 @@ export type HumanApproval = Readonly<{
 
 const recorded = new WeakSet<object>();
 
+/** Whether this exact object was created by recordHumanApproval in this process. */
+export function isRecordedApproval(approval: unknown): approval is HumanApproval {
+  return typeof approval === "object" && approval !== null && recorded.has(approval);
+}
+
 /** Who BAND authenticated as the sender of the approval action. */
 export type ApprovalSender = { id: string; type: string; role: string | null };
 

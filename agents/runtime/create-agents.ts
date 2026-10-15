@@ -4,7 +4,10 @@ import { AGENT_MAX_TOKENS, AGENT_MODEL, turnLimitsFor } from "@/agents/config/mo
 import type { BandUrls, RoleCredentials } from "@/agents/config/env";
 import type { AgentRole } from "@/agents/config/roles";
 import { bandClientFor } from "@/agents/band/case-room";
+import { NO_GENERATED_PREVIEWS } from "@/agents/handoff/governor-review";
+import { PersistentPreviewRegistry, type WorkflowRegistry } from "@/agents/persistence/workflow";
 import { toolsForRole } from "@/agents/tools/evidence-tools";
+import { AcceptedPlanRegistry, inMemoryAcceptedPlans } from "./accepted-plans";
 import { instrumentedClaudeFactory, type ClaudeCallListener } from "./claude-client";
 import { HandoffGate } from "./handoff-gate";
 import { buildSystemPrompt } from "./prompts";
@@ -39,6 +42,13 @@ export function createNativeFrameAgents(options: {
    * downstream agent that is in the room but not running receives no work.
    */
   mentionHumanOnly?: boolean;
+  /**
+   * Persistent workflow registry (server-only). When set, the Release Governor
+   * persists accepted plans and its reviews, and validates approvals against
+   * revalidated persisted previews. Without it, nothing is persisted and the
+   * preview registry is NO_GENERATED_PREVIEWS.
+   */
+  workflow?: WorkflowRegistry;
 }): NativeFrameAgent[] {
   const roleByAgentId = new Map(options.credentials.map((c) => [c.agentId, c.role] as const));
   const wanted = options.roles ?? options.credentials.map((c) => c.role);
@@ -47,6 +57,17 @@ export function createNativeFrameAgents(options: {
     .filter((c) => wanted.includes(c.role))
     .map(({ role, agentId, apiKey }) => {
       const logger = options.loggerFor(role);
+      const governor = role === "release-governor";
+      const plans = governor && options.workflow ? new AcceptedPlanRegistry(options.workflow) : inMemoryAcceptedPlans;
+      const previews = governor && options.workflow ? new PersistentPreviewRegistry(options.workflow) : NO_GENERATED_PREVIEWS;
+      const workflow = options.workflow;
+      const persistReview =
+        governor && workflow
+          ? async (envelope: unknown) => {
+              const saved = await workflow.saveGovernorReview(envelope);
+              if (!saved.ok) logger.warn("Governor review was not persisted", { problems: saved.errors.length });
+            }
+          : undefined;
       const adapter = new StampingAnthropicAdapter({
         anthropicModel: AGENT_MODEL,
         apiKey: options.anthropicApiKey,
@@ -54,7 +75,7 @@ export function createNativeFrameAgents(options: {
         ...turnLimitsFor(role),
         systemPrompt: buildSystemPrompt(role, { humanOnlyMentions: options.mentionHumanOnly === true }),
         // Audit which evidence tools the model used (tool name only, never arguments or results).
-        customTools: toolsForRole(role).map((tool) => ({
+        customTools: toolsForRole(role, { plans, previews }).map((tool) => ({
           ...tool,
           handler: (args: Record<string, unknown>) => {
             logger.info("Evidence tool called", { tool: tool.name });
@@ -63,12 +84,19 @@ export function createNativeFrameAgents(options: {
         })),
         logger,
         mentionPolicy: { role, roleByAgentId, humanOnly: options.mentionHumanOnly === true },
+        sendBoundary: { previews, ...(persistReview ? { onPosted: persistReview } : {}) },
         ...(options.onClaudeCall ? { clientFactory: instrumentedClaudeFactory(role, options.onClaudeCall) } : {}),
       });
       const agent = Agent.create({
         adapter,
         config: { agentId, apiKey, ...options.urls },
-        preprocessor: new HandoffGate(role, roleByAgentId, logger, closeRejectedVia(bandClientFor({ role, agentId, apiKey }, options.urls))),
+        preprocessor: new HandoffGate(
+          role,
+          roleByAgentId,
+          logger,
+          closeRejectedVia(bandClientFor({ role, agentId, apiKey }, options.urls)),
+          governor ? { plans, ...(previews instanceof PersistentPreviewRegistry ? { previews } : {}) } : {},
+        ),
         // The SDK default (false) joins only rooms added while the agent is
         // running. Case rooms outlive agent restarts, so rejoin them on start;
         // BAND then delivers their pending messages through the handoff gate.

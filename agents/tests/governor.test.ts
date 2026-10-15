@@ -92,7 +92,7 @@ describe("Release Governor intake (receiving gate)", () => {
     const accepted = (await run(pdMessage(), "pd-id")) as { history: HistoryProvider } | null;
     assert.ok(accepted);
     assert.equal(accepted.history.length, 0);
-    assert.equal(acceptedPlan(PLAN_ID)?.planId, PLAN_ID, "the gate keeps the authenticated plan for the Governor's tools");
+    assert.equal((await acceptedPlan(PLAN_ID))?.planId, PLAN_ID, "the gate keeps the authenticated plan for the Governor's tools");
   });
 });
 
@@ -291,13 +291,13 @@ describe("Release Governor tools and prompt", () => {
 
   it("reports deterministic checks and leaves visual checks not-evaluated", async () => {
     const check = tools.find((t) => t.name === "nativeframe_check_placement_plan")!;
-    recordAcceptedPlan(validPlacementPlan());
+    await recordAcceptedPlan(validPlacementPlan());
     const r = (await check.handler({ planId: PLAN_ID })) as { checks: { id: string; category: string; outcome: string }[] };
     assert.ok(r.checks.filter((c) => c.category === "policy").every((c) => c.outcome === "pass"), JSON.stringify(r.checks));
     assert.deepEqual(r.checks.filter((c) => c.category === "technical").map((c) => c.outcome), ["not-evaluated"]);
-    recordAcceptedPlan(validPlacementPlan({ planId: "plan:daybreak-cold-brew:luv-scene-1:v2", placement: { ...validPlacementPlan().placement, region: "shelf" } }));
-    const bad = (await check.handler({ planId: "plan:daybreak-cold-brew:luv-scene-1:v2" })) as { checks: { id: string; outcome: string }[] };
-    assert.equal(bad.checks.find((c) => c.id === "plan-rules")?.outcome, "fail");
+    const invalid = validPlacementPlan({ planId: "plan:daybreak-cold-brew:luv-scene-1:v2", placement: { ...validPlacementPlan().placement, region: "shelf" } });
+    assert.deepEqual(await recordAcceptedPlan(invalid), ["Plan does not validate; not recorded."]);
+    assert.equal(((await check.handler({ planId: invalid.planId })) as { found: boolean }).found, false, "invalid plans are never recorded");
     assert.equal(((await check.handler({ planId: "plan:never-received:v1" })) as { found: boolean }).found, false, "only authenticated plans");
   });
 

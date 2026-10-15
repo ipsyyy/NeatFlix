@@ -1,4 +1,5 @@
 import type { HandoffEnvelope, ValidationResult } from "./envelope";
+import type { PreviewRegistry } from "./governor-review";
 import { validateResult } from "./output-rules";
 import { HANDOFF_FENCE, formatHandoffBlock, validateOutgoing } from "./protocol";
 import { runtimeTimestamp } from "./timestamps";
@@ -17,7 +18,7 @@ export type StampResult =
  *
  * Call this immediately before the BAND POST: `now` is the trusted send time.
  */
-export function stampOutgoingContent(content: string, now: Date = new Date()): StampResult {
+export function stampOutgoingContent(content: string, now: Date = new Date(), options: { previews?: PreviewRegistry } = {}): StampResult {
   const timestamp = runtimeTimestamp(now);
   const errors: string[] = [];
   const readable = content.replace(BLOCK, "").trim();
@@ -40,7 +41,7 @@ export function stampOutgoingContent(content: string, now: Date = new Date()): S
     const envelope: Record<string, unknown> = { ...(draft as Record<string, unknown>) };
     delete envelope.timestamp;
     envelope.timestamp = timestamp;
-    const result = checkEnvelope(envelope, readable);
+    const result = checkEnvelope(envelope, readable, options.previews);
     if (!result.ok) {
       errors.push(...result.errors);
       return block;
@@ -56,14 +57,14 @@ export function stampOutgoingContent(content: string, now: Date = new Date()): S
  * Validates a model-drafted envelope the way the send boundary will: any
  * timestamp in the draft is ignored and replaced by the runtime.
  */
-export function validateDraft(draft: unknown, now: Date = new Date(), readable?: string) {
+export function validateDraft(draft: unknown, now: Date = new Date(), readable?: string, previews?: PreviewRegistry) {
   if (typeof draft !== "object" || draft === null || Array.isArray(draft)) {
     return validateOutgoing(draft);
   }
   const envelope: Record<string, unknown> = { ...(draft as Record<string, unknown>) };
   delete envelope.timestamp;
   envelope.timestamp = runtimeTimestamp(now);
-  return checkEnvelope(envelope, readable);
+  return checkEnvelope(envelope, readable, previews);
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -75,8 +76,8 @@ const isEvidenceList = (v: unknown) =>
  * pass. A Placement Director redraft costs about a minute, so problems must not
  * surface one stage at a time.
  */
-function checkEnvelope(envelope: Record<string, unknown>, readable?: string): ValidationResult<HandoffEnvelope> {
-  const result = validateOutgoing(envelope);
+function checkEnvelope(envelope: Record<string, unknown>, readable?: string, previews?: PreviewRegistry): ValidationResult<HandoffEnvelope> {
+  const result = validateOutgoing(envelope, { previews });
   const errors = result.ok ? validateResult(result.value, readable) : [...result.errors, ...ruleErrorsForInvalid(envelope, readable)];
   return errors.length > 0 ? { ok: false, errors: [...new Set(errors)] } : result;
 }

@@ -18,6 +18,8 @@ import {
 } from "@/agents/config/env";
 import { AGENT_MODEL } from "@/agents/config/model";
 import { AGENT_REGISTRY } from "@/agents/config/roles";
+import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store";
+import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { createNativeFrameAgents, type NativeFrameAgent } from "@/agents/runtime/create-agents";
 import { createRedactingLogger, safeErrorMessage } from "@/agents/security/redact";
 
@@ -47,9 +49,14 @@ async function main(): Promise<number> {
   loadLocalEnv();
   const secrets = collectSecrets(process.env);
 
+  // Persistent workflow registry when Supabase is configured; otherwise nothing is persisted.
+  const store = createWorkflowStoreFromEnv(process.env);
+  console.log(store ? "Workflow registry: Supabase (server-only)" : "Workflow registry: not configured; nothing is persisted and no previews exist");
+
   let agents: NativeFrameAgent[];
   try {
     agents = createNativeFrameAgents({
+      ...(store ? { workflow: new WorkflowRegistry(store) } : {}),
       credentials: readAllCredentials(process.env),
       urls: readBandUrls(process.env),
       anthropicApiKey: readAnthropicKey(process.env),
