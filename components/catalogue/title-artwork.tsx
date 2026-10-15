@@ -58,6 +58,11 @@ export function TitleArtwork({
   return <div {...a11y} className={`artwork-grain ${className}`} style={gradientStyle(artwork)} />;
 }
 
+/** Whether the artwork prints the title itself, so a visible HTML title would duplicate it. */
+export function artworkShowsTitle(artwork: ArtworkRef): boolean {
+  return artwork.kind === "image" && artwork.titleInArtwork === true;
+}
+
 function gradientStyle(artwork: PlaceholderArtwork): CSSProperties {
   const [h1, h2] = artwork.hues;
   const { x, y } = artwork.focus;

@@ -21,7 +21,7 @@ import {
 } from "@/lib/catalogue/eligibility";
 import type { CatalogueTitle } from "@/lib/catalogue/types";
 import { StatusBadges } from "./status-badge";
-import { GateMarks, TitleArtwork } from "./title-artwork";
+import { artworkShowsTitle, GateMarks, TitleArtwork } from "./title-artwork";
 
 type TitleRecordContextValue = { open: (id: string) => void };
 
@@ -111,20 +111,27 @@ function TitleRecordBody({
           className="absolute inset-0"
         />
         <GateMarks always />
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close title record"
-          className="absolute right-3 top-3 grid size-10 place-items-center rounded-full bg-canvas/70 text-ink backdrop-blur transition-colors hover:bg-canvas"
-        >
-          <X aria-hidden="true" className="size-5" />
-        </button>
       </div>
 
       <div className="space-y-6 p-6 sm:p-8">
         <header className="space-y-3">
-          <p className="text-sm text-muted">Title record</p>
-          <h2 id="title-record-heading" className="type-condensed text-4xl font-bold leading-none tracking-tight">
+          {/* The close button sits beside the label, off the artwork, so it never covers faces or printed titles. */}
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-muted">Title record</p>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close title record"
+              className="-my-2 -mr-2 grid size-10 shrink-0 place-items-center rounded-full border border-line-strong text-ink transition-colors hover:bg-canvas"
+            >
+              <X aria-hidden="true" className="size-5" />
+            </button>
+          </div>
+          {/* Printed-title artwork already shows the title in the 21:9 header; keep it for assistive technology. */}
+          <h2
+            id="title-record-heading"
+            className={artworkShowsTitle(title.artwork) ? "sr-only" : "type-condensed text-4xl font-bold leading-none tracking-tight"}
+          >
             {title.title}
           </h2>
           <p className="max-w-prose text-base leading-relaxed text-ink-soft">{title.description}</p>

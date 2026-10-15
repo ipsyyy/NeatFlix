@@ -41,11 +41,6 @@ function TitleCard({ title }: { title: CatalogueTitle }) {
           className="tile-art absolute inset-0"
         />
         <GateMarks />
-        {!eligible && (
-          <span className="absolute bottom-2 left-2 rounded-md bg-canvas/80 px-2 py-1 text-xs font-medium text-ink-soft backdrop-blur">
-            Not eligible yet
-          </span>
-        )}
       </div>
 
       <h3 className="mt-4 text-lg font-semibold leading-snug text-ink">
@@ -61,6 +56,11 @@ function TitleCard({ title }: { title: CatalogueTitle }) {
       <p className="mt-1 text-sm text-muted">
         {title.genre}, {title.rating}, {formatDuration(title.durationSeconds)}
       </p>
+
+      {/* Kept off the artwork, so it never covers a printed title. */}
+      {!eligible && (
+        <p className="mt-2 w-fit rounded-md bg-surface px-2 py-1 text-xs font-medium text-ink-soft">Not eligible yet</p>
+      )}
 
       <StatusBadges title={title} size="sm" className="mt-3" />
     </article>

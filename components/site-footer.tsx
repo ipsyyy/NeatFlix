@@ -7,7 +7,7 @@ export function SiteFooter() {
           streaming service.
         </p>
         <p className="text-muted">
-          All artwork is original. Titles without finished artwork show a temporary placeholder.
+          Title artwork is illustrative and used for demonstration purposes only.
         </p>
       </div>
     </footer>

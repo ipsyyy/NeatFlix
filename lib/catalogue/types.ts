@@ -48,6 +48,12 @@ export type ImageArtwork = {
   /** Path under /public, e.g. "/artwork/title-hero.png". */
   src: string;
   alt: string;
+  /**
+   * The image itself shows the title. Surfaces where the printed title is in
+   * view hide their visible heading (keeping it for assistive technology), so
+   * the title never appears twice.
+   */
+  titleInArtwork?: boolean;
   /** Painted beneath the image, and shown alone if the image fails to load. */
   fallback: PlaceholderArtwork;
   /**
