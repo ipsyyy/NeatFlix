@@ -48,7 +48,14 @@ export function createNativeFrameAgents(options: {
         maxTokens: AGENT_MAX_TOKENS,
         maxToolRounds: AGENT_MAX_TOOL_ROUNDS,
         systemPrompt: buildSystemPrompt(role),
-        customTools: toolsForRole(role),
+        // Audit which evidence tools the model used (tool name only, never arguments or results).
+        customTools: toolsForRole(role).map((tool) => ({
+          ...tool,
+          handler: (args: Record<string, unknown>) => {
+            logger.info("Evidence tool called", { tool: tool.name });
+            return tool.handler(args);
+          },
+        })),
         logger,
         ...(options.onClaudeCall ? { clientFactory: instrumentedClaudeFactory(role, options.onClaudeCall) } : {}),
       });

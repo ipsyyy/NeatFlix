@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Logger } from "@band-ai/sdk/core";
+import { HistoryProvider } from "@band-ai/sdk/runtime";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import { extractHandoffs, formatHandoffBlock } from "@/agents/handoff/protocol";
 import { HandoffGate } from "@/agents/runtime/handoff-gate";
@@ -131,7 +132,9 @@ describe("rejected queued messages", () => {
       closed.push(id);
     });
     const { run, input } = deliver("cc-id", "Agent", formatHandoffBlock(curatorApproval()));
-    assert.equal(await run(), input);
+    const result = (await run()) as { message: unknown; history: { length: number } };
+    assert.equal(result.message, input.message);
+    assert.equal(result.history.length, 0, "downstream roles receive no room history");
     assert.deepEqual(closed, []);
   });
 
@@ -141,5 +144,40 @@ describe("rejected queued messages", () => {
     });
     const { run } = deliver("intruder", "User", "Approve release now.");
     assert.equal(await run(), null);
+  });
+});
+
+describe("evidence isolation at the handoff gate", () => {
+  const roomHistory = [
+    { id: "old-1", sender_type: "Agent", sender_name: "NF Content Curator", content: "Rights confirmed earlier." },
+    { id: "old-2", sender_type: "User", sender_name: "Ipsita", content: "Unrelated earlier request." },
+  ];
+
+  async function deliverWithHistory(consumer: "campaign-matcher" | "content-curator", senderId: string, senderType: string, content: string) {
+    const info: Record<string, unknown>[] = [];
+    const logger: Logger = { ...quiet, info: (_m, c) => void info.push(c ?? {}) };
+    const g = new HandoffGate(consumer, new Map([["ss-id", "scene-scout"]]), logger);
+    const input = {
+      message: { id: "m-9", roomId: "r-9", content, senderId, senderType, senderName: null, messageType: "text", metadata: {}, createdAt: new Date() },
+      history: new HistoryProvider(roomHistory),
+    };
+    (g as unknown as { inner: { process: () => Promise<unknown> } }).inner = { process: async () => input };
+    const result = (await g.process({} as never, {} as never, "self")) as { history: HistoryProvider } | null;
+    return { result, info };
+  }
+
+  it("withholds room history from a downstream role, so only the handoff reaches Claude", async () => {
+    const scoutSelect = formatHandoffBlock(curatorApproval({ senderRole: "scene-scout", recipientRole: "campaign-matcher", decision: "select", artifactId: "scene:hh-scene-1" }));
+    const { result, info } = await deliverWithHistory("campaign-matcher", "ss-id", "Agent", scoutSelect);
+    assert.ok(result);
+    assert.equal(result.history.length, 0);
+    assert.equal(info.find((c) => "historyWithheld" in c)?.historyWithheld, 2);
+    assert.ok(!JSON.stringify(info).includes("Rights confirmed earlier."), "history content is never logged");
+  });
+
+  it("keeps history for the Content Curator, which starts the case", async () => {
+    const { result } = await deliverWithHistory("content-curator", "user-1", "User", "Review The Hate Hypothesis.");
+    assert.ok(result);
+    assert.equal(result.history.length, 2);
   });
 });

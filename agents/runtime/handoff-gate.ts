@@ -1,5 +1,5 @@
 import type { Logger } from "@band-ai/sdk/core";
-import { DefaultPreprocessor } from "@band-ai/sdk/runtime";
+import { DefaultPreprocessor, HistoryProvider } from "@band-ai/sdk/runtime";
 import type { AgentRole } from "@/agents/config/roles";
 import { ACCEPTED_INPUTS, canConsume, extractHandoffs } from "@/agents/handoff/protocol";
 import { checkHandoffTimestamp } from "@/agents/handoff/timestamps";
@@ -82,6 +82,10 @@ export type CloseRejectedMessage = (roomId: string, messageId: string) => Promis
  * redeliver it on every restart. A rejection is a final decision, so the gate
  * closes the message (processing → processed) through the receiving agent's own
  * BAND identity. Closing never lets the message through, even if it fails.
+ *
+ * Evidence isolation: a downstream role receives only the authenticated handoff.
+ * Its room history is withheld, so earlier messages (from other agents or other
+ * runs) cannot be used as evidence; facts must come from the handoff and tools.
  */
 export class HandoffGate {
   private readonly inner = new DefaultPreprocessor();
@@ -127,11 +131,13 @@ export class HandoffGate {
       }
       return null;
     }
+    const isolate = !ACCEPTED_INPUTS[this.consumer].humanRequest;
     this.logger.info("Accepted message at handoff boundary", {
       room: message.roomId,
       message: message.id,
       senderRole: sender.role ?? "human-user",
       senderType: sender.type.slice(0, 20),
+      ...(isolate ? { historyWithheld: input.history?.length ?? 0 } : {}),
       ...(screen.handoffTimestamp
         ? {
             handoffTimestamp: screen.handoffTimestamp,
@@ -140,6 +146,6 @@ export class HandoffGate {
           }
         : {}),
     });
-    return input;
+    return isolate ? { ...input, history: new HistoryProvider([]) } : input;
   };
 }

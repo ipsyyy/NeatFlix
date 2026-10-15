@@ -1,3 +1,5 @@
+import type { HandoffEnvelope } from "./envelope";
+import { validateResult } from "./output-rules";
 import { HANDOFF_FENCE, formatHandoffBlock, validateOutgoing } from "./protocol";
 import { runtimeTimestamp } from "./timestamps";
 
@@ -10,11 +12,15 @@ export type StampResult =
 /**
  * Prepares an outgoing BAND message at the send boundary. Every handoff block
  * gets the runtime timestamp (replacing anything the model wrote) and must then
- * pass full validation, or nothing is sent. Text outside the blocks is untouched.
+ * pass full validation and the role's output rules (output-rules.ts), or nothing
+ * is sent. Text outside the blocks is untouched.
+ *
+ * Call this immediately before the BAND POST: `now` is the trusted send time.
  */
 export function stampOutgoingContent(content: string, now: Date = new Date()): StampResult {
   const timestamp = runtimeTimestamp(now);
   const errors: string[] = [];
+  const envelopes: HandoffEnvelope[] = [];
   let handoffs = 0;
 
   const stamped = content.replace(BLOCK, (block, json: string) => {
@@ -39,9 +45,12 @@ export function stampOutgoingContent(content: string, now: Date = new Date()): S
       errors.push(...result.errors);
       return block;
     }
+    envelopes.push(result.value);
     return formatHandoffBlock(result.value);
   });
 
+  const readable = content.replace(BLOCK, "").trim();
+  for (const envelope of envelopes) errors.push(...validateResult(envelope, readable));
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, content: stamped, handoffs, timestamp: handoffs > 0 ? timestamp : null };
 }
@@ -57,5 +66,8 @@ export function validateDraft(draft: unknown, now: Date = new Date()) {
   const envelope: Record<string, unknown> = { ...(draft as Record<string, unknown>) };
   delete envelope.timestamp;
   envelope.timestamp = runtimeTimestamp(now);
-  return validateOutgoing(envelope);
+  const result = validateOutgoing(envelope);
+  if (!result.ok) return result;
+  const errors = validateResult(result.value);
+  return errors.length > 0 ? { ok: false as const, errors } : result;
 }

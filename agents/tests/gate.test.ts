@@ -169,10 +169,12 @@ describe("HandoffGate preprocessor", () => {
     assert.ok(lines[0].includes('"senderRole":"unregistered"'));
   });
 
-  it("passes accepted handoffs through unchanged", async () => {
+  it("passes accepted handoffs through with room history withheld", async () => {
     const content = handoff("placement-director", "instructions-ready", "release-governor");
     const { gate, input, lines } = gateWith("pd-id", "Agent", content);
-    assert.equal(await gate.process({} as never, {} as never, "self"), input);
+    const result = (await gate.process({} as never, {} as never, "self")) as { message: unknown; history: { length: number } };
+    assert.equal(result.message, input.message);
+    assert.equal(result.history.length, 0);
     assert.equal(lines.length, 0);
   });
 });

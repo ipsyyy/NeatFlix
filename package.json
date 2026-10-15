@@ -11,7 +11,8 @@
     "test": "tsx --test \"agents/**/*.test.ts\"",
     "agents:check": "tsx agents/scripts/check-identities.ts",
     "agents:start": "tsx agents/scripts/start-agents.ts",
-    "agents:handoff-test": "tsx agents/scripts/run-handoff-test.ts"
+    "agents:handoff-test": "tsx agents/scripts/run-handoff-test.ts",
+    "agents:matcher-test": "tsx agents/scripts/run-matcher-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",

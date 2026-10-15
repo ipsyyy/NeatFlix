@@ -10,6 +10,7 @@ import {
   OUT_OF_SCOPE_CATEGORIES,
   PLACEMENT_MAX_SECONDS,
   PLACEMENT_MIN_SECONDS,
+  SUPPORTED_MARKETS,
   SUPPORTED_TIERS,
 } from "@/lib/campaigns/rules";
 import type { Campaign } from "@/lib/campaigns/types";
@@ -35,6 +36,7 @@ function defineCampaign(c: Campaign): Campaign {
     if (!exclusions.includes(required)) fail(`missing required exclusion "${required}".`);
   }
 
+  if (!SUPPORTED_MARKETS.includes(c.market)) fail(`market "${c.market}" is not supported in the MVP.`);
   if (OUT_OF_SCOPE_CATEGORIES.includes(c.category)) fail(`category "${c.category}" is out of scope.`);
   if (c.brandSafetyRisk !== "low") fail(`brand-safety risk "${c.brandSafetyRisk}" is not allowed in the MVP.`);
 

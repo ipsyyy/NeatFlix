@@ -6,6 +6,7 @@ import {
   ADULT_MIN_AGE,
   categoryLabel,
   OUT_OF_SCOPE_CATEGORIES,
+  SUPPORTED_MARKETS,
   SUPPORTED_TIERS,
 } from "./rules";
 import type { Campaign } from "./types";
@@ -71,8 +72,10 @@ export function matchCampaignToScene(
     },
     {
       label: "Market",
-      outcome: "pass",
-      evidence: `${campaign.market} only.`,
+      outcome: SUPPORTED_MARKETS.includes(campaign.market) ? "pass" : "fail",
+      evidence: SUPPORTED_MARKETS.includes(campaign.market)
+        ? `${campaign.market} only.`
+        : `${campaign.market} is not a supported market; the MVP runs in ${SUPPORTED_MARKETS.join(", ")} only.`,
     },
   ];
 
