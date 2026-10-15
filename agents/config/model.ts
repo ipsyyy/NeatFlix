@@ -1,3 +1,5 @@
+import type { AgentRole } from "./roles";
+
 /**
  * Central model settings for every NativeFrame agent. Change the model here only.
  * PRODUCT_SOURCE_OF_TRUTH.md §10: Anthropic Claude handles agent reasoning.
@@ -10,10 +12,20 @@ export const AGENT_MAX_TOKENS = 8000;
 /** Upper bound on tool-call rounds in one turn, so a confused agent cannot loop. */
 export const AGENT_MAX_TOOL_ROUNDS = 8;
 
+/** The SDK's default turn budget, kept for every role that drafts compact handoffs. */
+export const DEFAULT_TURN_TIMEOUT_MS = 5 * 60_000;
+
 /**
- * Time budget for one whole turn, across its tool rounds. The SDK default is
- * five minutes, but a Placement Director round that drafts the full placement
- * plan takes about a minute, so validate-then-send with one revision needs
- * more. Ten minutes still ends a stuck turn; AGENT_MAX_TOOL_ROUNDS bounds loops.
+ * Placement Director's turn budget. One full placement-plan draft takes about a
+ * minute per tool round, so a validate-then-send turn with revisions needs more
+ * than the default. AGENT_MAX_TOOL_ROUNDS still bounds repair loops.
  */
-export const AGENT_TURN_TIMEOUT_MS = 10 * 60_000;
+export const PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS = 12 * 60_000;
+
+/** Per-role turn limits. Only Placement Director gets the longer budget. */
+export function turnLimitsFor(role: AgentRole): { turnTimeoutMs: number; maxToolRounds: number } {
+  return {
+    turnTimeoutMs: role === "placement-director" ? PLACEMENT_DIRECTOR_TURN_TIMEOUT_MS : DEFAULT_TURN_TIMEOUT_MS,
+    maxToolRounds: AGENT_MAX_TOOL_ROUNDS,
+  };
+}

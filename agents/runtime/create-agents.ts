@@ -1,6 +1,6 @@
 import { Agent } from "@band-ai/sdk";
 import type { Logger } from "@band-ai/sdk/core";
-import { AGENT_MAX_TOKENS, AGENT_MAX_TOOL_ROUNDS, AGENT_MODEL, AGENT_TURN_TIMEOUT_MS } from "@/agents/config/model";
+import { AGENT_MAX_TOKENS, AGENT_MODEL, turnLimitsFor } from "@/agents/config/model";
 import type { BandUrls, RoleCredentials } from "@/agents/config/env";
 import type { AgentRole } from "@/agents/config/roles";
 import { bandClientFor } from "@/agents/band/case-room";
@@ -46,8 +46,7 @@ export function createNativeFrameAgents(options: {
         anthropicModel: AGENT_MODEL,
         apiKey: options.anthropicApiKey,
         maxTokens: AGENT_MAX_TOKENS,
-        maxToolRounds: AGENT_MAX_TOOL_ROUNDS,
-        turnTimeoutMs: AGENT_TURN_TIMEOUT_MS,
+        ...turnLimitsFor(role),
         systemPrompt: buildSystemPrompt(role),
         // Audit which evidence tools the model used (tool name only, never arguments or results).
         customTools: toolsForRole(role).map((tool) => ({

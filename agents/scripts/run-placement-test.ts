@@ -30,7 +30,7 @@ import {
   readBandUrls,
   type RoleCredentials,
 } from "@/agents/config/env";
-import { AGENT_MODEL, AGENT_TURN_TIMEOUT_MS } from "@/agents/config/model";
+import { AGENT_MODEL, turnLimitsFor } from "@/agents/config/model";
 import { AGENT_REGISTRY, type AgentRole } from "@/agents/config/roles";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import { APPROVED_EVIDENCE_SOURCES, RELEASE_GOVERNOR_DISCLOSURE, validateResult } from "@/agents/handoff/output-rules";
@@ -55,7 +55,7 @@ const APPROVED_TOOLS = new Set([...REQUIRED_TOOLS, "nativeframe_validate_handoff
 const POLL_MS = 4_000;
 const SETTLE_MS = 6_000;
 // Outlasts the agent's own turn budget, so a slow turn ends on its own timeout, not ours.
-const WAIT_MS = AGENT_TURN_TIMEOUT_MS + 2 * 60_000;
+const WAIT_MS = turnLimitsFor("placement-director").turnTimeoutMs + 2 * 60_000;
 const STOP_TIMEOUT_MS = 10_000;
 
 const arg = (name: string) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1]?.trim();

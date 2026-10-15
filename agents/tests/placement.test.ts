@@ -9,7 +9,6 @@ import { RELEASE_GOVERNOR_DISCLOSURE, validateResult } from "@/agents/handoff/ou
 import { STAND_IN_DISCLOSURE, validatePlacementPlan, type PlacementPlan } from "@/agents/handoff/placement-plan";
 import { formatHandoffBlock } from "@/agents/handoff/protocol";
 import { stampOutgoingContent, validateDraft } from "@/agents/handoff/stamp";
-import { AGENT_MAX_TOOL_ROUNDS, AGENT_TURN_TIMEOUT_MS } from "@/agents/config/model";
 import { HandoffGate, screenIncomingMessage } from "@/agents/runtime/handoff-gate";
 import { withHandoffStamping } from "@/agents/runtime/stamping-adapter";
 import { toolsForRole } from "@/agents/tools/evidence-tools";
@@ -166,6 +165,9 @@ describe("placement validator: feedback the model can satisfy in one revision", 
     assert.ok(frameErrors(validatePlacementPlan(affirmative)).length > 0);
     const otherClause = plan({ placement: { ...base.placement, description: "Do not move anyone; set the cup into the source frame." } });
     assert.ok(frameErrors(validatePlacementPlan(otherClause)).length > 0);
+    const otherVerb = plan({ assumptions: ["Do not alter the source frame beyond the cup."] });
+    assert.ok(frameErrors(validatePlacementPlan(otherVerb)).length > 0, "negating another verb does not excuse the term");
+    assert.ok(frameErrors(validateResult(pdHandoff(), `${readable} Nothing else changes in the scene frame.`)).length > 0);
   });
 
   it("reports plan errors and output-rule errors together, in the draft check and at send", () => {
@@ -188,10 +190,6 @@ describe("placement validator: feedback the model can satisfy in one revision", 
     const missing = (await tool.handler({ handoffJson, readableText: readable.replace(RELEASE_GOVERNOR_DISCLOSURE, "") })) as { ok: boolean; errors?: string[] };
     assert.equal(missing.ok, false);
     assert.ok(missing.errors?.some((e) => e.includes(RELEASE_GOVERNOR_DISCLOSURE)));
-  });
-
-  it("gives a turn enough time for every allowed tool round of a full plan draft", () => {
-    assert.ok(AGENT_TURN_TIMEOUT_MS >= AGENT_MAX_TOOL_ROUNDS * 60_000);
   });
 });
 

@@ -34,11 +34,14 @@ function strings(value: unknown): string[] {
 }
 
 /**
- * A negation earlier in the same clause, e.g. "not a scene frame" or "do not
- * present the artwork as a scene frame". Clauses end at sentence punctuation,
- * so a negation in another clause never excuses a term.
+ * A negation that denies the term itself: "not a scene frame", "no source frame",
+ * "rather than a video frame", or "do not present the artwork as a scene frame or
+ * video frame".
+ * A negation of some other verb ("do not alter the source frame") still treats
+ * the artwork as a frame, so it does not excuse the term.
  */
-const NEGATED_BEFORE = /\b(not|never|no|isn't|aren't|wasn't|rather than|instead of)\b[^.;:!?\n]{0,60}$/i;
+const NEGATED_BEFORE =
+  /\b(?:not|never|no|isn't|aren't|wasn't)\b(?:[^.;:!?\n]{0,40}\bas)?\s+(?:(?:an?|the|any)\s+)?(?:(?:real|actual|genuine)\s+)?(?:[\w-]+\s+frames?,?\s+(?:or|nor)\s+(?:(?:an?|the)\s+)?)*$|\b(?:rather than|instead of)\s+(?:(?:an?|the)\s+)?$/i;
 
 /**
  * Text that calls the stand-in a frame or implies analyzed footage. Reports the
