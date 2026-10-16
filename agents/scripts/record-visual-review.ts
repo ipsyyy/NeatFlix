@@ -1,56 +1,50 @@
 /**
- * Bounded command: records the project owner's human visual rejection of
- * edited-still v1 (append-only; the asset's own record is never changed).
- * Without --record it only verifies (read-only). The reviewer is the human
- * owner of the NativeFrame BAND agents, read with a read-only identity lookup;
- * no agent is started.
+ * Bounded command: records the project owner's human visual review of one
+ * explicitly named, registered edited still (append-only; the asset's own
+ * record is never changed). Without --record it only verifies (read-only).
+ * The reviewer is the human owner of the NativeFrame BAND agents, read with a
+ * read-only identity lookup; no agent is started.
  *
- * Run: npm run media:visual-review
- *      npm run media:visual-review -- --record=asset:luv-hypothesis:edited-still:luv-scene-1:v1
+ * Run: npm run media:visual-review -- --asset=<id> --decision=rejected --reason="..." [--reason="..."]
+ *      add --record=<the same id> to write the review
  */
 import { bandClientFor } from "@/agents/band/case-room";
 import { collectSecrets, loadLocalEnv, readAllCredentials, readBandUrls } from "@/agents/config/env";
 import { loadVerifiedEditedStill } from "@/agents/media/edited-still";
-import { currentVisualDecision, recordVisualReview } from "@/agents/media/visual-review";
+import { currentVisualDecision, parseReviewArgs, recordVisualReview } from "@/agents/media/visual-review";
 import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
 
-/** The owner's decision, as given in the review instruction. Fixed here; nothing is taken from arguments. */
-const REVIEW = Object.freeze({
-  assetId: "asset:luv-hypothesis:edited-still:luv-scene-1:v1",
-  decision: "rejected" as const,
-  reasons: [
-    "The inserted Daybreak Cold Brew cup visually overlaps and hides part of the woman’s left forearm and sweater sleeve.",
-    "The inserted cup appears approximately 20–25% taller than the existing takeaway cups and is too prominent.",
-  ],
-});
-
 async function main(): Promise<number> {
   loadLocalEnv();
   const out = (s: string) => console.log(redactSecrets(s, collectSecrets(process.env)));
+  const args = parseReviewArgs(process.argv.slice(2));
+  if (!args.ok) return (out(`${args.errors.join(" ")} Nothing was done.`), 1);
+  const { assetId, decision, reasons, record } = args.value;
   const store = createWorkflowStoreFromEnv(process.env);
   if (!store) return (out("Supabase is not configured. Nothing was done."), 1);
   const workflow = new WorkflowRegistry(store);
-  const verified = await loadVerifiedEditedStill(workflow, store, REVIEW.assetId);
-  if (!verified.ok) return (out(`${REVIEW.assetId} does not revalidate. Nothing was done.`), 1);
-  out(`${REVIEW.assetId} revalidates (${verified.row.checksum}); current decision: ${await currentVisualDecision(store, REVIEW.assetId)}`);
+  const verified = await loadVerifiedEditedStill(workflow, store, assetId);
+  if (!verified.ok) return (out(`${assetId} is not a registered edited still that revalidates. Nothing was done.`), 1);
+  out(`${assetId} revalidates (case ${verified.row.case_id}, plan ${verified.row.plan_id}, ${verified.row.checksum}); current decision: ${await currentVisualDecision(store, assetId)}`);
+  out(`Review to record: ${decision}, ${reasons.length} reason(s).`);
 
   const director = readAllCredentials(process.env).find((c) => c.role === "placement-director")!;
   const me = await bandClientFor(director, readBandUrls(process.env)).agentApiIdentity.getAgentMe();
   const ownerUserId = me.data.owner_uuid ?? "";
   if (!ownerUserId) return (out("BAND did not report the agents' human owner. Nothing was done."), 1);
   out(`Reviewer: the human owner of the NativeFrame BAND agents (${ownerUserId}).`);
-  if (process.argv.find((a) => a.startsWith("--record="))?.split("=")[1] !== REVIEW.assetId) {
-    out(`Verification only. To record the rejection, pass --record=${REVIEW.assetId}.`);
+  if (!record) {
+    out(`Verification only. To record this review, add --record=${assetId}.`);
     return 0;
   }
   const r = await recordVisualReview({
     workflow,
     store,
-    assetId: REVIEW.assetId,
-    decision: REVIEW.decision,
-    reasons: [...REVIEW.reasons],
+    assetId,
+    decision,
+    reasons,
     reviewer: { id: ownerUserId, type: "User", role: null, name: "NativeFrame project owner" },
     ownerUserId,
   });

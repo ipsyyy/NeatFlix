@@ -7,7 +7,7 @@ import { loadVerifiedEditedStill, sha256Hex } from "@/agents/media/edited-still"
 import type { ImageEditProvider, ProviderEditResult } from "@/agents/media/gemini-provider";
 import { buildRevisedPlan, LUV_PLAN_V2 } from "@/agents/media/plan-revisions";
 import { executeStillEdit, type StillEditRequest } from "@/agents/media/still-edit";
-import { currentVisualDecision, recordVisualReview } from "@/agents/media/visual-review";
+import { currentVisualDecision, parseReviewArgs, recordVisualReview } from "@/agents/media/visual-review";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
 import { IntegrityError } from "@/agents/persistence/store";
 import { canonical, staticFrameRegistry, WorkflowRegistry } from "@/agents/persistence/workflow";
@@ -149,5 +149,83 @@ describe("human-directed plan v2 and edited still v2", () => {
     assert.equal(await currentVisualDecision(ctx.store, target("v1").outputAssetId), "rejected");
     const plan1 = await ctx.workflow.loadPlan(ctx.v1.planId);
     assert.ok(plan1.ok && canonical(plan1.value) === canonical(ctx.v1), "plan v1 unchanged");
+  });
+});
+
+describe("reviews for versioned edited stills (v1 and v2)", () => {
+  const V2_REASONS = [
+    "The man's mouth and expression changed from the registered source frame.",
+    "The inserted cup overlaps and hides part of the woman's left forearm and sweater.",
+    "The inserted cup remains approximately 17–18% larger than the man's original cup.",
+    "The cup moved right but did not create visible separation from the actor and her clothing.",
+  ];
+  /** v1 rejected, plan v2 persisted, and edited still v2 generated. */
+  async function withV2() {
+    const ctx = await setup();
+    assert.ok((await review(ctx)).ok);
+    assert.equal((await ctx.workflow.savePlan(buildRevisedPlan(ctx.v1, LUV_PLAN_V2))).ok, true);
+    const r = await executeStillEdit(target("v2"), { workflow: ctx.workflow, store: ctx.store, storage: ctx.storage, provider: provider(60) });
+    assert.ok(r.ok, JSON.stringify(r));
+    return ctx;
+  }
+  const reviewV2 = (ctx: Awaited<ReturnType<typeof setup>>, over: Partial<Parameters<typeof recordVisualReview>[0]> = {}) =>
+    review(ctx, { assetId: target("v2").outputAssetId, reasons: V2_REASONS, ...over });
+
+  it("gives v2 its own rejection, distinct from v1's", async () => {
+    const ctx = await withV2();
+    const v2 = await reviewV2(ctx);
+    assert.ok(v2.ok && v2.status === "created");
+    const r1 = await ctx.store.getVisualReview(target("v1").outputAssetId);
+    const r2 = await ctx.store.getVisualReview(target("v2").outputAssetId);
+    assert.ok(r1 && r2 && r1.review_id !== r2.review_id);
+    assert.deepEqual(r1!.reasons, REASONS);
+    assert.deepEqual(r2!.reasons, V2_REASONS);
+    assert.equal(r1!.asset_checksum, (await ctx.store.getMediaAsset(target("v1").outputAssetId))!.checksum);
+    assert.equal(r2!.asset_checksum, (await ctx.store.getMediaAsset(target("v2").outputAssetId))!.checksum);
+    assert.notEqual(r1!.asset_checksum, r2!.asset_checksum);
+    assert.equal(await currentVisualDecision(ctx.store, target("v1").outputAssetId), "rejected");
+    assert.equal(await currentVisualDecision(ctx.store, target("v2").outputAssetId), "rejected");
+  });
+
+  it("binds a review to the asset's own case and checksum", async () => {
+    const ctx = await withV2();
+    const v1Sum = (await ctx.store.getMediaAsset(target("v1").outputAssetId))!.checksum;
+    const row = { review_id: "x", asset_id: target("v2").outputAssetId, case_id: CASE, decision: "rejected" as const, reasons: V2_REASONS, asset_checksum: v1Sum, reviewer_user_id: OWNER.id, reviewer_name: "x" };
+    await assert.rejects(ctx.store.insertVisualReview(row), IntegrityError, "v1's checksum cannot review v2");
+    await ctx.store.ensureCase({ case_id: "NF-DEMO-0002", title_id: "luv-hypothesis", status: "open" });
+    await assert.rejects(ctx.store.insertVisualReview({ ...row, case_id: "NF-DEMO-0002", asset_checksum: (await ctx.store.getMediaAsset(target("v2").outputAssetId))!.checksum }), IntegrityError, "another case");
+    const recorded = await reviewV2(ctx);
+    assert.ok(recorded.ok && recorded.review.case_id === CASE && recorded.review.asset_id === target("v2").outputAssetId);
+  });
+
+  it("keeps a reviewed v2 immutable, and fails closed on duplicates and conflicts", async () => {
+    const ctx = await withV2();
+    await reviewV2(ctx);
+    await assert.rejects(ctx.store.updateMediaAsset(target("v2").outputAssetId, { mime_type: "image/png" }), IntegrityError);
+    const again = await reviewV2(ctx);
+    assert.ok(again.ok && again.status === "existing", "identical review is idempotent");
+    assert.equal((await reviewV2(ctx, { decision: "approved", reasons: [] })).ok, false, "conflicting decision");
+    assert.equal((await reviewV2(ctx, { reasons: V2_REASONS.slice(0, 2) })).ok, false, "conflicting reasons");
+    assert.equal((await review(ctx, { reasons: V2_REASONS })).ok, false, "v1 keeps its own review; v2's reasons cannot replace it");
+    assert.deepEqual((await ctx.store.getVisualReview(target("v1").outputAssetId))!.reasons, REASONS);
+  });
+
+  it("refuses arbitrary, unregistered, or non-edited-still assets", async () => {
+    const ctx = await withV2();
+    for (const assetId of ["asset:luv-hypothesis:edited-still:luv-scene-1:v9", "asset:other:edited-still:other:v1", FRAME_ID, VIDEO_ID, "https://evil.example.com/x.png", ""]) {
+      assert.equal((await review(ctx, { assetId, reasons: V2_REASONS })).ok, false, assetId);
+    }
+  });
+
+  it("parses only explicit, consistent command arguments", () => {
+    const v2 = target("v2").outputAssetId;
+    const ok = parseReviewArgs([`--asset=${v2}`, "--decision=rejected", "--reason=One = with equals", "--reason=Two", `--record=${v2}`]);
+    assert.ok(ok.ok && ok.value.record && ok.value.assetId === v2);
+    assert.deepEqual(ok.ok && ok.value.reasons, ["One = with equals", "Two"]);
+    assert.ok(parseReviewArgs([`--asset=${v2}`, "--decision=rejected"]).ok && !(parseReviewArgs([`--asset=${v2}`, "--decision=rejected"]) as { value: { record: boolean } }).value.record, "verify-only without --record");
+    assert.equal(parseReviewArgs([`--asset=${v2}`, "--decision=rejected", `--record=${target("v1").outputAssetId}`]).ok, false, "--record must match --asset");
+    assert.equal(parseReviewArgs([`--asset=${v2}`, `--asset=${target("v1").outputAssetId}`, "--decision=rejected"]).ok, false, "one asset only");
+    assert.equal(parseReviewArgs(["--asset=asset:luv-hypothesis:source-frame:luv-scene-1:v1", "--decision=rejected"]).ok, false, "edited stills only");
+    assert.equal(parseReviewArgs([`--asset=${v2}`, "--decision=maybe"]).ok, false);
   });
 });
