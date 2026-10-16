@@ -38,10 +38,8 @@ import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import { APPROVED_EVIDENCE_SOURCES, RELEASE_GOVERNOR_DISCLOSURE, validateResult } from "@/agents/handoff/output-rules";
 import {
   generationClaims,
-  misleadingFrameTerms,
   PLACEMENT_REGION,
   PROMPT_NOT_EXECUTED_LABEL,
-  STAND_IN_DISCLOSURE,
   validatePlacementPlan,
 } from "@/agents/handoff/placement-plan";
 import { HANDOFF_FENCE, extractHandoffs, validateOutgoing } from "@/agents/handoff/protocol";
@@ -49,12 +47,16 @@ import { CLOCK_SKEW_MS, checkHandoffTimestamp } from "@/agents/handoff/timestamp
 import type { ClaudeCallRecord } from "@/agents/runtime/claude-client";
 import { createNativeFrameAgents, type NativeFrameAgent } from "@/agents/runtime/create-agents";
 import { createRedactingLogger, safeErrorMessage } from "@/agents/security/redact";
+import type { SourceFrameRegistry } from "@/agents/handoff/source-frames";
+import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store";
+import { canonical, staticFrameRegistry, WorkflowRegistry } from "@/agents/persistence/workflow";
 import { catalogue } from "@/data/catalogue";
+import { frameChecks, LUV_FRAME } from "./placement-frame-checks";
 
 const CASE_ID = "NF-DEMO-0001";
 const ACTIVE_ROLE: AgentRole = "placement-director";
-const REQUIRED_TOOLS = ["nativeframe_get_selected_scene", "nativeframe_get_campaign", "nativeframe_get_source_artwork"];
-const APPROVED_TOOLS = new Set([...REQUIRED_TOOLS, "nativeframe_validate_handoff"]);
+const REQUIRED_TOOLS = ["nativeframe_get_selected_scene", "nativeframe_get_campaign", "nativeframe_get_source_frame"];
+const APPROVED_TOOLS = new Set([...REQUIRED_TOOLS, "nativeframe_get_source_artwork", "nativeframe_validate_handoff"]);
 const POLL_MS = 4_000;
 const SETTLE_MS = 6_000;
 // Outlasts the agent's own turn budget, so a slow turn ends on its own timeout, not ours.
@@ -139,10 +141,10 @@ async function deliveryStatus(c: RoleCredentials, urls: ReturnType<typeof readBa
 const BLOCK = new RegExp("```" + HANDOFF_FENCE + "\\s*\\n[\\s\\S]*?\\n```", "g");
 const readableOf = (content: string) => content.replace(BLOCK, "").trim();
 
-function envelopeOf(content: string): HandoffEnvelope | null {
+function envelopeOf(content: string, frames?: SourceFrameRegistry): HandoffEnvelope | null {
   const blocks = extractHandoffs(content);
   if (blocks.length !== 1 || !blocks[0].ok) return null;
-  const result = validateOutgoing(blocks[0].value);
+  const result = validateOutgoing(blocks[0].value, { frames });
   return result.ok ? result.value : null;
 }
 
@@ -219,6 +221,22 @@ async function main(): Promise<number> {
     return 1;
   }
   console.log(`\nOriginal Campaign Matcher handoff ${original.id} in "${SOURCE_ROOM_TITLE}" (BAND ${original.at}); prepared unstamped re-delivery.`);
+
+  // Persistence (server-only adapter) and the registered source frame the plan must bind.
+  const store = createWorkflowStoreFromEnv(process.env);
+  if (!store) {
+    console.error("Supabase is not configured (SUPABASE_URL, SUPABASE_SECRET_KEY); nothing was posted.");
+    return 1;
+  }
+  const workflow = new WorkflowRegistry(store);
+  const registeredFrame = await workflow.loadSourceFrame(LUV_FRAME.assetId);
+  if (!registeredFrame.ok || registeredFrame.value.caseId !== LUV_FRAME.caseId || registeredFrame.value.sceneId !== LUV_FRAME.sceneId) {
+    console.error(`Registered source frame ${LUV_FRAME.assetId} does not revalidate; nothing was posted.`);
+    return 1;
+  }
+  const registryChecksum = registeredFrame.value.checksum;
+  const frameSnapshot = staticFrameRegistry(LUV_FRAME.caseId, LUV_FRAME.sceneId, await workflow.loadSourceFramesForScene(LUV_FRAME.caseId, LUV_FRAME.sceneId));
+  console.log(`Registered source frame ${LUV_FRAME.assetId} revalidated (${registeredFrame.value.storageRef}, ${registryChecksum})`);
   const statusBefore = new Map(await Promise.all(others.map(async (c) => [c.role, await deliveryStatus(c, urls, room.roomId)] as const)));
 
   // 3. Start only Placement Director.
@@ -229,6 +247,7 @@ async function main(): Promise<number> {
     roles: [ACTIVE_ROLE],
     urls,
     anthropicApiKey,
+    workflow,
     loggerFor: (role) => auditLogger(createRedactingLogger(role, secrets), events),
     onClaudeCall: (r) => {
       claudeCalls.push(r);
@@ -323,14 +342,24 @@ async function main(): Promise<number> {
   const toolsUsed = [...new Set(events.filter((e) => e.kind === "Evidence tool called").map((e) => String(e.ctx.tool)))];
   const blocked = events.filter((e) => /Blocked|Suppressed/.test(e.kind));
   const firstClaude = claudeCalls[0];
-  const envelope = reply ? envelopeOf(reply.content) : null;
+  const envelope = reply ? envelopeOf(reply.content, frameSnapshot) : null;
   const plan = envelope?.artifact?.kind === "placement-plan" ? envelope.artifact : undefined;
   const readable = reply ? readableOf(reply.content) : "";
   const replyFresh = envelope && reply ? checkHandoffTimestamp(envelope.timestamp, { now: new Date(), postedAt: new Date(reply.at) }) : null;
-  const planErrors = plan ? validatePlacementPlan(plan, envelope?.caseId) : ["no plan"];
+  const planErrors = plan ? validatePlacementPlan(plan, envelope?.caseId, frameSnapshot) : ["no plan"];
+  // Persist the verified plan through the production adapter (it revalidates the frame binding), then read it back.
+  let persisted = false;
+  if (plan && planErrors.length === 0) {
+    const saved = await workflow.savePlan(plan);
+    const back = await workflow.loadPlan(plan.planId);
+    persisted = saved.ok && back.ok && canonical(back.value) === canonical(plan);
+    console.log(`\nPersistence: save ${saved.ok ? (saved.value.created ? "created" : "already stored (identical)") : `failed: ${saved.errors.slice(0, 3).join("; ")}`}; read-back ${back.ok ? (persisted ? "identical" : "DIFFERS") : `failed: ${back.errors.slice(0, 3).join("; ")}`}`);
+  }
   const outputErrors = envelope ? validateResult(envelope, readable) : ["no envelope"];
   const bandHost = new URL(urls.restUrl ?? "https://app.band.ai").host;
-  const allowedHosts = new Set(["api.anthropic.com", bandHost]);
+  // The Supabase registry is a database, not a media API; every other host is refused.
+  const supabaseHost = new URL(process.env.SUPABASE_URL!.trim()).host;
+  const allowedHosts = new Set(["api.anthropic.com", bandHost, supabaseHost]);
   const unexpectedHosts = [...contactedHosts].filter((h) => !allowedHosts.has(h));
   const unchanged =
     originalBlock.ok &&
@@ -396,8 +425,8 @@ async function main(): Promise<number> {
       replies.length === 1 && extractHandoffs(reply?.content ?? "").length === 1 && envelope?.senderRole === "placement-director" &&
         envelope.recipientRole === "release-governor" && envelope.decision === "instructions-ready" && envelope.blockers.length === 0 && readable.length > 0],
     ["Typed placement plan is present, schema-valid, and visible in the BAND message", Boolean(plan) && planErrors.length === 0 && Boolean(reply?.content.includes('"kind": "placement-plan"'))],
-    [`Plan: ${TITLE_ID} ${SCENE_ID} 00:07–00:10 from ${MATCH_ARTIFACT_ID}, artwork ${ARTWORK_SRC}; Daybreak Cold Brew branded takeaway cup, visible café table, stationary, no hand interaction`,
-      plan?.sourceArtifacts.titleId === TITLE_ID && plan.sourceArtifacts.matchArtifactId === MATCH_ARTIFACT_ID && "src" in plan.sourceMedia && plan.sourceMedia.src === ARTWORK_SRC &&
+    [`Plan: ${TITLE_ID} ${SCENE_ID} 00:07–00:10 from ${MATCH_ARTIFACT_ID}; Daybreak Cold Brew branded takeaway cup, visible café table, stationary, no hand interaction`,
+      plan?.sourceArtifacts.titleId === TITLE_ID && plan.sourceArtifacts.matchArtifactId === MATCH_ARTIFACT_ID &&
         envelope?.artifactId.includes(SCENE_ID) === true && !/hate|hh-scene/i.test(reply?.content ?? "") &&
         plan.scene.sceneId === SCENE_ID && plan.scene.startSeconds === 7 && plan.scene.endSeconds === 10 && plan.product.product === "Daybreak Cold Brew" &&
         plan.product.format === "Branded takeaway coffee cup" && plan.placement.region.toLowerCase() === PLACEMENT_REGION && plan.placement.motion === "stationary" && plan.placement.handInteraction === "none"],
@@ -408,21 +437,19 @@ async function main(): Promise<number> {
       plan?.prompts.stillImageEdit.status === "not-executed" && plan.prompts.motion.status === "not-executed" &&
         plan.prompts.stillImageEdit.label === PROMPT_NOT_EXECUTED_LABEL && plan.prompts.motion.label === PROMPT_NOT_EXECUTED_LABEL &&
         plan.prompts.motion.durationSeconds >= 3 && plan.prompts.motion.durationSeconds <= 5 && /not (yet )?(been )?executed/i.test(readable)],
-    ["No claim of a real scene frame, video, or completed generation",
-      plan?.sourceMedia.kind === "title-artwork-stand-in" && plan.sourceMedia.isSceneFrame === false &&
-        generationClaims(`${readable}\n${envelope?.nextAction ?? ""}`).length === 0 && !outputErrors.some((e) => /generation/.test(e))],
+    ["No claim of a completed edit, preview, or generation",
+      Boolean(plan) && generationClaims(`${readable}\n${envelope?.nextAction ?? ""}`).length === 0 && !outputErrors.some((e) => /generation/.test(e))],
+    ...frameChecks(plan, readable, registryChecksum),
     ["Every evidence item cites the structured handoff or an approved tool; no room history",
       allEvidence.length > 0 && allEvidence.every((e) => approvedPrefixes.some((p) => e.source.trim().toLowerCase().startsWith(p))) &&
         !outputErrors.some((e) => /evidence|room history/.test(e))],
     [`States exactly: "${RELEASE_GOVERNOR_DISCLOSURE}"`, readable.includes(RELEASE_GOVERNOR_DISCLOSURE)],
     ["Visible result mentions only the human User (Release Governor absent; recipientRole kept in the handoff)",
       Boolean(human && reply && reply.mentions.length === 1 && reply.mentions[0] === human.id) && envelope?.recipientRole === "release-governor"],
-    [`States exactly: "${STAND_IN_DISCLOSURE}"; no source/scene/video frame terminology`,
-      readable.includes(STAND_IN_DISCLOSURE) && plan?.sourceMedia.note === STAND_IN_DISCLOSURE &&
-        misleadingFrameTerms(reply?.content ?? "").length === 0],
+    ["Plan persisted in Supabase through the production adapter and reads back identically", persisted],
     ["Placement Director handoff stamped at send and fresh against BAND's posting time", Boolean(replyFresh?.ok && stamps.some((s) => s.ctx.timestamp === envelope?.timestamp))],
     ["No thought, status, or other agent event posted", agentEvents.length === 0],
-    ["No external media API called (only BAND and Anthropic hosts contacted)", unexpectedHosts.length === 0 && contactedHosts.size > 0],
+    ["No external media API called (only BAND, Anthropic, and the Supabase registry contacted)", unexpectedHosts.length === 0 && contactedHosts.size > 0],
     ["No other agent processed a message; Release Governor not present and did not consume", unrelated.length === 0 && absent.length === 3],
     ["No message remains pending or failed for Campaign Matcher or Placement Director",
       Object.values(queues).every((q) => q.pending.length === 0 && q.processing.length === 0 && q.failed.length === 0)],
