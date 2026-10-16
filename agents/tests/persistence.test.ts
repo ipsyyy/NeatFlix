@@ -286,7 +286,7 @@ describe("server-only boundaries", () => {
   it("keeps persistence and the secret key out of browser-reachable code", () => {
     for (const path of ["app", "components", "lib"].flatMap(files)) {
       const text = readFileSync(path, "utf8");
-      assert.ok(!/agents\/persistence|SUPABASE_SECRET_KEY|SUPABASE_SERVICE_ROLE|sb_secret_|supabase-store/.test(text), path);
+      assert.ok(!/agents\/persistence|agents\/media|@google\/genai|GEMINI_API_KEY|REACTOR_API_KEY|SUPABASE_SECRET_KEY|SUPABASE_SERVICE_ROLE|sb_secret_|supabase-store/.test(text), path);
     }
     for (const path of files("agents")) assert.ok(!/NEXT_PUBLIC_SUPABASE_(SECRET|SERVICE)/.test(readFileSync(path, "utf8")) || path.endsWith(".test.ts"), path);
   });

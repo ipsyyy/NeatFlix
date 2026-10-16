@@ -15,16 +15,19 @@
     "agents:matcher-test": "tsx agents/scripts/run-matcher-test.ts",
     "agents:placement-test": "tsx agents/scripts/run-placement-test.ts",
     "agents:close-queued": "tsx agents/scripts/close-queued.ts",
-    "agents:governor-test": "tsx agents/scripts/run-governor-test.ts"
+    "agents:governor-test": "tsx agents/scripts/run-governor-test.ts",
+    "media:edit-still": "tsx agents/scripts/edit-still.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
     "@band-ai/rest-client": "^0.0.146",
     "@band-ai/sdk": "^0.6.0",
+    "@google/genai": "2.26.0",
     "lucide-react": "^1.56.0",
     "next": "16.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "sharp": "0.35.5",
     "zod": "^4.6.7"
   },
   "devDependencies": {
