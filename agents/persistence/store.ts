@@ -141,6 +141,8 @@ export interface WorkflowStore {
 
   insertReview(row: NewReview): Promise<void>;
   getReview(reviewId: string): Promise<ReviewRow | null>;
+  /** Up to `limit` newest Governor reviews of a case, filtered by the store itself. */
+  listReviewsForCase(caseId: string, limit: number): Promise<ReviewRow[]>;
 
   insertApproval(row: NewApproval): Promise<void>;
   getApprovalForReview(reviewId: string): Promise<ApprovalRow | null>;

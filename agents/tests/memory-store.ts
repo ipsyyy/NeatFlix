@@ -128,6 +128,14 @@ export class MemoryWorkflowStore implements WorkflowStore {
     return clone(this.reviews.get(reviewId));
   }
 
+  async listReviewsForCase(caseId: string, limit: number): Promise<ReviewRow[]> {
+    return [...this.reviews.values()]
+      .filter((r) => r.case_id === caseId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((r) => structuredClone(r));
+  }
+
   async insertApproval(row: NewApproval): Promise<void> {
     if (this.approvals.has(row.approval_id) || [...this.approvals.values()].some((a) => a.review_id === row.review_id)) {
       throw new DuplicateRecordError("human_approvals");

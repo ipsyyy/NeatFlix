@@ -20,7 +20,8 @@
     "media:plan-revision": "tsx agents/scripts/create-plan-revision.ts",
     "media:visual-review": "tsx agents/scripts/record-visual-review.ts",
     "media:motion-preview": "tsx agents/scripts/motion-preview.ts",
-    "media:fallback-preview": "tsx agents/scripts/fallback-preview.ts"
+    "media:fallback-preview": "tsx agents/scripts/fallback-preview.ts",
+    "agents:deliver-plan-v3": "tsx agents/scripts/deliver-plan-v3.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",

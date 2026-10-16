@@ -146,6 +146,14 @@ export class SupabaseWorkflowStore implements WorkflowStore {
     return this.one<ReviewRow>("governor_reviews", "review_id", reviewId);
   }
 
+  async listReviewsForCase(caseId: string, limit: number): Promise<ReviewRow[]> {
+    const rows = (await this.request("governor_reviews", {
+      method: "GET",
+      query: `case_id=eq.${encodeURIComponent(caseId)}&select=*&order=created_at.desc&limit=${safeLimit(limit)}`,
+    })) as ReviewRow[] | null;
+    return rows ?? [];
+  }
+
   async insertApproval(row: NewApproval): Promise<void> {
     await this.insert("human_approvals", row);
   }

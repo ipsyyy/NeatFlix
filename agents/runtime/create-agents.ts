@@ -56,6 +56,11 @@ export function createNativeFrameAgents(options: {
    * check (server-only). Without it, a registered preview fails that check.
    */
   previewEvidence?: PreviewEvidenceSource;
+  /**
+   * Replaces how the Release Governor's posted review is persisted (requires
+   * `workflow`), for a bounded run that saves only under its own guard.
+   */
+  persistGovernorReview?: (envelope: unknown) => Promise<{ ok: true } | { ok: false; errors: string[] }>;
 }): NativeFrameAgent[] {
   const roleByAgentId = new Map(options.credentials.map((c) => [c.agentId, c.role] as const));
   const wanted = options.roles ?? options.credentials.map((c) => c.role);
@@ -70,11 +75,13 @@ export function createNativeFrameAgents(options: {
       const workflow = options.workflow;
       // Placement Director binds, and Release Governor checks, registered source frames from storage.
       const frames = workflow && (governor || role === "placement-director") ? new PersistentSourceFrameRegistry(workflow) : undefined;
+      const save = options.persistGovernorReview ?? ((envelope: unknown) => workflow!.saveGovernorReview(envelope));
       const persistReview =
         governor && workflow
           ? async (envelope: unknown) => {
-              const saved = await workflow.saveGovernorReview(envelope);
+              const saved = await save(envelope);
               if (!saved.ok) logger.warn("Governor review was not persisted", { problems: saved.errors.length });
+              else logger.info("Governor review persisted", {});
             }
           : undefined;
       const adapter = new StampingAnthropicAdapter({
