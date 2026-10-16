@@ -21,11 +21,15 @@
  * Run (preflight): npm run agents:deliver-plan-v3
  * Run (live):      npm run agents:deliver-plan-v3 -- --live=plan:daybreak-cold-brew:luv-scene-1:v3 --room-title=NF-DEMO-0001-LUV-GOVERNOR-V3-R1
  */
+import type { Logger } from "@band-ai/sdk/core";
 import { bandClientFor, ensureCaseRoom } from "@/agents/band/case-room";
 import { postWithTrustedTimestamp } from "@/agents/band/post";
 import { collectSecrets, ConfigError, loadLocalEnv, readAllCredentials, readAnthropicKey, readBandUrls, type RoleCredentials } from "@/agents/config/env";
 import { AGENT_MODEL, turnLimitsFor } from "@/agents/config/model";
 import { AGENT_REGISTRY } from "@/agents/config/roles";
+import type { GovernorReview } from "@/agents/handoff/governor-review";
+import { extractHandoffs, HANDOFF_FENCE } from "@/agents/handoff/protocol";
+import type { ClaudeCallRecord } from "@/agents/runtime/claude-client";
 import { evaluatePreviewEvidence } from "@/agents/media/preview-evidence";
 import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
 import { PersistentSourceFrameRegistry } from "@/agents/persistence/source-frames";
@@ -62,6 +66,22 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters
 }) as typeof fetch;
 
 const arg = (name: string) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+
+/** Records the gate, send-boundary, and persistence events of the run (log message and its redacted context). */
+type AuditEvent = { message: string; context: Record<string, unknown> };
+const AUDITED = /handoff boundary|send boundary|Evidence tool called|Governor review|Blocked|Suppressed|Post-send hook/;
+function auditLogger(base: Logger, events: AuditEvent[]): Logger {
+  const record = (message: string, context?: Record<string, unknown>) => {
+    if (AUDITED.test(message)) events.push({ message, context: context ?? {} });
+  };
+  return {
+    debug: (m, c) => base.debug(m, c),
+    info: (m, c) => (record(m, c), base.info(m, c)),
+    warn: (m, c) => (record(m, c), base.warn(m, c)),
+    error: (m, c) => (record(m, c), base.error(m, c)),
+  };
+}
+const BLOCK = new RegExp("```" + HANDOFF_FENCE + "\\s*\\n[\\s\\S]*?\\n```", "g");
 
 async function main(): Promise<number> {
   loadLocalEnv();
@@ -126,6 +146,9 @@ async function main(): Promise<number> {
   const delivery = buildDirectorDelivery(pre.value.plan, { governorMention: `@${governorP.handle ?? "release-governor"}`, frames, disclosure: pre.value.disclosure });
   if (!delivery.ok) return (out(`Handoff no longer validates: ${delivery.errors.join("; ")}. Nothing was posted.`), 1);
 
+  const events: AuditEvent[] = [];
+  const claudeCalls: ClaudeCallRecord[] = [];
+  const guardResults: { ok: boolean; errors: string[] }[] = [];
   const [agent] = createNativeFrameAgents({
     credentials,
     roles: ["release-governor"],
@@ -134,8 +157,16 @@ async function main(): Promise<number> {
     mentionHumanOnly: true,
     workflow,
     previewEvidence: evidence,
-    persistGovernorReview: (envelope) => guardedSaveGovernorReview(deps, PIN, envelope),
-    loggerFor: (role) => createRedactingLogger(role, secrets),
+    persistGovernorReview: async (envelope) => {
+      const result = await guardedSaveGovernorReview(deps, PIN, envelope);
+      guardResults.push(result.ok ? { ok: true, errors: [] } : { ok: false, errors: result.errors });
+      return result.ok ? { ok: true } : result;
+    },
+    loggerFor: (role) => auditLogger(createRedactingLogger(role, secrets), events),
+    onClaudeCall: (r) => {
+      claudeCalls.push(r);
+      out(`  [claude] ${r.model}, stop=${r.stopReason}, tokens in/out=${r.inputTokens}/${r.outputTokens}, ${r.durationMs} ms`);
+    },
   });
   const stop = async () => {
     try {
@@ -179,7 +210,39 @@ async function main(): Promise<number> {
   if (replied) await new Promise((r) => setTimeout(r, SETTLE_MS));
   out(`Release Governor ${replied ? "replied" : "did not reply in time"}; stopping: ${(await stop()) ? "stopped" : "stop timed out"}.`);
 
-  // 3. Read back from storage.
+  // 3. Read back the room (both identities' views) and the Governor's handoff.
+  const items = new Map<string, Awaited<ReturnType<typeof readItems>>[number]>();
+  for (const c of [director, governor]) for (const m of await readItems(c)) items.set(m.id, m);
+  const messages = [...items.values()].sort((a, b) => String(a.inserted_at).localeCompare(String(b.inserted_at)));
+  out("\nRoom messages:");
+  for (const m of messages) {
+    const mentions = Array.isArray(m.metadata?.mentions) ? (m.metadata.mentions as { id?: string }[]).map((x) => x?.id).join(",") : "";
+    out(`  ${m.inserted_at}  ${m.id}  ${m.sender_name ?? m.sender_type} [${m.sender_type}] type=${m.message_type} mentions=${mentions || "none"}`);
+  }
+  const reply = messages.find((m) => m.sender_id === governor.agentId && m.message_type === "text");
+  if (reply) {
+    out(`\nRelease Governor readable result:\n${reply.content.replace(BLOCK, "").trim()}`);
+    const [block] = extractHandoffs(reply.content);
+    const env = block?.ok ? (block.value as Record<string, unknown>) : null;
+    const review = env?.artifact as GovernorReview | undefined;
+    if (env) out(`\nHandoff: ${env.senderRole} → ${env.recipientRole}, decision=${env.decision}, case=${env.caseId}, artifact=${env.artifactId}, timestamp=${env.timestamp}`);
+    if (review?.kind === "governor-review") {
+      out(`Review ${review.reviewId}: decision=${review.decision}`);
+      for (const [k, v] of Object.entries(review.hhh)) out(`  hhh.${k}: ${v.outcome} — ${v.rationale}`);
+      for (const c of review.checks) out(`  check ${c.id} [${c.category}] ${c.outcome} — ${c.detail} (${c.source})`);
+      out(`  blockers: ${JSON.stringify(review.blockers)}`);
+      out(`  corrections: ${JSON.stringify(review.corrections)}`);
+      out(`  preview: ${JSON.stringify(review.preview)}`);
+      out(`  humanApproval: ${review.humanApproval.status}; uncertainty: ${review.uncertainty}`);
+    }
+  }
+  out("\nAudit events:");
+  for (const e of events) out(`  ${e.message} ${JSON.stringify(e.context).slice(0, 400)}`);
+  out(`Save-time guard results: ${guardResults.length === 0 ? "not invoked" : guardResults.map((g) => (g.ok ? "PERSISTED" : `REFUSED: ${g.errors.join(" | ")}`)).join("; ")}`);
+  const totals = claudeCalls.reduce((t, c) => ({ in: t.in + c.inputTokens, out: t.out + c.outputTokens, ms: t.ms + c.durationMs }), { in: 0, out: 0, ms: 0 });
+  out(`Claude calls: ${claudeCalls.length}; tokens in/out ${totals.in}/${totals.out}; ${totals.ms} ms. Cost is not recorded by the runtime.`);
+
+  // 4. Read back from storage.
   const reviews = await store.listReviewsForCase(PIN.caseId, 5);
   const caseRow = await store.getCase(PIN.caseId);
   out(`\nGovernor reviews for ${PIN.caseId}: ${reviews.length}; case status: ${caseRow?.status}`);
