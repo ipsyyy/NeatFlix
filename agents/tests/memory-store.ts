@@ -11,6 +11,8 @@ import {
   type NewMediaAsset,
   type NewPlan,
   type NewReview,
+  type NewVisualReview,
+  type VisualReviewRow,
   type PlanRow,
   type ReviewRow,
   type WorkflowStore,
@@ -30,6 +32,7 @@ export class MemoryWorkflowStore implements WorkflowStore {
   readonly media = new Map<string, MediaAssetRow>();
   readonly reviews = new Map<string, ReviewRow>();
   readonly approvals = new Map<string, ApprovalRow>();
+  readonly visualReviews = new Map<string, VisualReviewRow>();
   private tick = 0;
 
   /** Deterministic, strictly increasing timestamps. */
@@ -81,7 +84,7 @@ export class MemoryWorkflowStore implements WorkflowStore {
   async updateMediaAsset(assetId: string, patch: Partial<Omit<NewMediaAsset, "asset_id">>): Promise<void> {
     const row = this.media.get(assetId);
     if (!row) return;
-    if ([...this.reviews.values()].some((r) => r.preview_asset_id === assetId)) {
+    if ([...this.reviews.values()].some((r) => r.preview_asset_id === assetId) || this.visualReviews.has(assetId)) {
       throw new IntegrityError("media_assets", "referenced by a Governor review and immutable");
     }
     this.media.set(assetId, structuredClone({ ...row, ...patch }));
@@ -139,6 +142,19 @@ export class MemoryWorkflowStore implements WorkflowStore {
 
   async getApprovalForReview(reviewId: string): Promise<ApprovalRow | null> {
     return clone([...this.approvals.values()].find((a) => a.review_id === reviewId));
+  }
+
+  async insertVisualReview(row: NewVisualReview): Promise<void> {
+    if (this.visualReviews.has(row.asset_id) || [...this.visualReviews.values()].some((v) => v.review_id === row.review_id)) throw new DuplicateRecordError("media_visual_reviews");
+    const asset = this.media.get(row.asset_id);
+    if (!asset || asset.case_id !== row.case_id) throw new IntegrityError("media_visual_reviews", "no asset with this asset_id and case_id");
+    if (asset.checksum !== row.asset_checksum) throw new IntegrityError("media_visual_reviews", "review must name the asset's registered checksum");
+    if (row.decision === "rejected" && row.reasons.length === 0) throw new IntegrityError("media_visual_reviews", "a rejection must state reasons");
+    this.visualReviews.set(row.asset_id, structuredClone({ ...row, created_at: this.now() }));
+  }
+
+  async getVisualReview(assetId: string): Promise<VisualReviewRow | null> {
+    return clone(this.visualReviews.get(assetId));
   }
 
   /** Test-only: changes a stored row out of band, as a compromised or hand-edited database could. */

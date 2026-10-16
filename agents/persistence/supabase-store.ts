@@ -11,6 +11,8 @@ import {
   type NewMediaAsset,
   type NewPlan,
   type NewReview,
+  type NewVisualReview,
+  type VisualReviewRow,
   type PlanRow,
   type ReviewRow,
   type WorkflowStore,
@@ -150,6 +152,14 @@ export class SupabaseWorkflowStore implements WorkflowStore {
 
   getApprovalForReview(reviewId: string): Promise<ApprovalRow | null> {
     return this.one<ApprovalRow>("human_approvals", "review_id", reviewId);
+  }
+
+  async insertVisualReview(row: NewVisualReview): Promise<void> {
+    await this.insert("media_visual_reviews", row);
+  }
+
+  getVisualReview(assetId: string): Promise<VisualReviewRow | null> {
+    return this.one<VisualReviewRow>("media_visual_reviews", "asset_id", assetId);
   }
 }
 

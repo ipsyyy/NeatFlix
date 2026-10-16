@@ -5,8 +5,9 @@
  * Without the flag it makes no provider call and no write: it only verifies the
  * plan and source frame (read-only) and prints what it would do.
  *
- * Run (verification only):  npm run media:edit-still
- * Run (one paid call):      npm run media:edit-still -- --approve-paid-call=plan:daybreak-cold-brew:luv-scene-1:v1
+ * Run (verification only):  npm run media:edit-still [-- --target=v2]
+ * Run (one paid call):      npm run media:edit-still -- --target=v2 --approve-paid-call=plan:daybreak-cold-brew:luv-scene-1:v2
+ *                           (v1, the default target: --approve-paid-call=plan:daybreak-cold-brew:luv-scene-1:v1)
  *
  * Prints only identifiers, hashes, resolutions, and latency. Never keys.
  */
@@ -19,13 +20,21 @@ import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store"
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
 
-/** The one approved edit. These identifiers are fixed; nothing here is taken from arguments. */
-const APPROVED_EDIT: StillEditRequest = Object.freeze({
-  planId: "plan:daybreak-cold-brew:luv-scene-1:v1",
-  sourceFrameAssetId: "asset:luv-hypothesis:source-frame:luv-scene-1:v1",
-  sourceFrameStorageRef: "storage://nf-media/frames/luv-hypothesis/luv-scene-1-8s.png",
-  outputAssetId: "asset:luv-hypothesis:edited-still:luv-scene-1:v1",
-  outputStorageRef: "storage://nf-media/edits/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v1/edited-still-v1.png",
+/** The approved edits, one per plan version. Identifiers are fixed; arguments only choose among them. */
+const SOURCE_FRAME = { sourceFrameAssetId: "asset:luv-hypothesis:source-frame:luv-scene-1:v1", sourceFrameStorageRef: "storage://nf-media/frames/luv-hypothesis/luv-scene-1-8s.png" };
+const TARGETS: Readonly<Record<string, StillEditRequest>> = Object.freeze({
+  v1: Object.freeze({
+    planId: "plan:daybreak-cold-brew:luv-scene-1:v1",
+    ...SOURCE_FRAME,
+    outputAssetId: "asset:luv-hypothesis:edited-still:luv-scene-1:v1",
+    outputStorageRef: "storage://nf-media/edits/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v1/edited-still-v1.png",
+  }),
+  v2: Object.freeze({
+    planId: "plan:daybreak-cold-brew:luv-scene-1:v2",
+    ...SOURCE_FRAME,
+    outputAssetId: "asset:luv-hypothesis:edited-still:luv-scene-1:v2",
+    outputStorageRef: "storage://nf-media/edits/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v2/edited-still-v2.png",
+  }),
 });
 const PROVIDER_TIMEOUT_MS = 180_000;
 
@@ -33,6 +42,12 @@ async function main(): Promise<number> {
   loadLocalEnv();
   const secrets = collectSecrets(process.env);
   const out = (s: string) => console.log(redactSecrets(s, secrets));
+  const targetName = process.argv.find((a) => a.startsWith("--target="))?.split("=")[1] ?? "v1";
+  const APPROVED_EDIT = TARGETS[targetName];
+  if (!APPROVED_EDIT) {
+    out(`Unknown target "${targetName.slice(0, 20)}"; use ${Object.keys(TARGETS).join(" or ")}. Nothing was done.`);
+    return 1;
+  }
   const approval = process.argv.find((a) => a.startsWith("--approve-paid-call="))?.split("=")[1];
   const approved = approval === APPROVED_EDIT.planId;
 
@@ -52,7 +67,7 @@ async function main(): Promise<number> {
   out(`Prompt: ${ctx.value.prompt.length} characters, sha256 ${ctx.value.promptSha256}; model ${GEMINI_IMAGE_EDIT_MODEL}`);
   out(`Output: ${APPROVED_EDIT.outputAssetId} at ${APPROVED_EDIT.outputStorageRef}`);
   if (!approved) {
-    out(`Verification only. To make the single paid call, pass --approve-paid-call=${APPROVED_EDIT.planId}.`);
+    out(`Verification only. To make the single paid call, pass --target=${targetName} --approve-paid-call=${APPROVED_EDIT.planId}.`);
     return 0;
   }
   const provider = createGeminiProviderFromEnv(process.env);

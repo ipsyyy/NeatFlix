@@ -16,7 +16,9 @@
     "agents:placement-test": "tsx agents/scripts/run-placement-test.ts",
     "agents:close-queued": "tsx agents/scripts/close-queued.ts",
     "agents:governor-test": "tsx agents/scripts/run-governor-test.ts",
-    "media:edit-still": "tsx agents/scripts/edit-still.ts"
+    "media:edit-still": "tsx agents/scripts/edit-still.ts",
+    "media:plan-revision": "tsx agents/scripts/create-plan-revision.ts",
+    "media:visual-review": "tsx agents/scripts/record-visual-review.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",

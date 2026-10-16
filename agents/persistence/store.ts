@@ -75,12 +75,26 @@ export type ApprovalRow = {
   created_at: string;
 };
 
+/** A human visual review of one media asset (supabase/migrations/20261016050000_media_visual_reviews.sql). */
+export type VisualReviewRow = {
+  review_id: string;
+  asset_id: string;
+  case_id: string;
+  decision: "approved" | "rejected";
+  reasons: string[];
+  asset_checksum: string;
+  reviewer_user_id: string;
+  reviewer_name: string;
+  created_at: string;
+};
+
 /** Insert inputs: the store sets created_at (and updated_at for cases). */
 export type NewCase = Omit<CaseRow, "created_at" | "updated_at">;
 export type NewPlan = Omit<PlanRow, "created_at">;
 export type NewMediaAsset = Omit<MediaAssetRow, "created_at">;
 export type NewReview = Omit<ReviewRow, "created_at">;
 export type NewApproval = Omit<ApprovalRow, "created_at">;
+export type NewVisualReview = Omit<VisualReviewRow, "created_at">;
 
 /** A row with that primary or unique key already exists. Duplicates and replays are never overwritten. */
 export class DuplicateRecordError extends Error {
@@ -130,4 +144,8 @@ export interface WorkflowStore {
 
   insertApproval(row: NewApproval): Promise<void>;
   getApprovalForReview(reviewId: string): Promise<ApprovalRow | null>;
+
+  /** One append-only human visual review per asset; the reviewed asset then becomes immutable. */
+  insertVisualReview(row: NewVisualReview): Promise<void>;
+  getVisualReview(assetId: string): Promise<VisualReviewRow | null>;
 }
