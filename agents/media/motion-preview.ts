@@ -53,8 +53,37 @@ export type MotionPreviewResult = {
   commandsSent: string[];
   /** Wall-clock seconds from session ready to terminated, measured by the client. */
   sessionSeconds: number;
+  generatedSeconds: number;
   runtime: { sdk: string; bundleSha256: string; browser: string };
 };
+
+/**
+ * What a failed provider run leaves behind, for billing and audit. Never holds
+ * credentials or media: only identifiers, command names, timings, and a
+ * redacted error.
+ */
+export type ProviderRunRecord = {
+  errorCategory: string;
+  message: string;
+  sessionId: string | null;
+  commandsSent: string[];
+  reachedReady: boolean;
+  /** Client-measured seconds from ready to closed; null when ready was reached but the close was not observed. */
+  readyToCloseSeconds: number | null;
+  generatedSeconds: number;
+  resolution: unknown;
+};
+
+/** A provider failure that carries its run record. */
+export class ProviderRunError extends ProviderError {
+  constructor(message: string, readonly run: ProviderRunRecord) {
+    super(message);
+    this.name = "ProviderRunError";
+  }
+}
+
+/** A failed run with its billing estimate, as retained and reported. */
+export type FailedRunReport = ProviderRunRecord & { billedSeconds: number | null; estimatedCostUsd: number | null; costRate: ProviderCostRate; costBasis: string; recordedAt: string };
 
 /** One motion preview: the approved still and exact prompt in, one recorded clip out. */
 export interface MotionPreviewProvider {
@@ -67,6 +96,8 @@ export interface MotionPreviewProvider {
 export interface AttemptLedger {
   claim(key: string, record: Record<string, unknown>): Promise<"claimed" | "exists">;
   has(key: string): Promise<boolean>;
+  /** Retains a claimed attempt's outcome beside its claim, which is never modified. */
+  recordOutcome(key: string, record: Record<string, unknown>): Promise<void>;
 }
 
 /** A machine-local ledger outside the repository: one exclusively created file per attempt. */
@@ -84,6 +115,9 @@ export class FileAttemptLedger implements AttemptLedger {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return "exists" as const;
       throw error;
     }
+  }
+  async recordOutcome(key: string, record: Record<string, unknown>) {
+    await writeFile(join(this.dir, `${sha256Hex(key)}.outcome.json`), JSON.stringify({ key, ...record }, null, 1), { flag: "wx", mode: 0o600 });
   }
   async has(key: string) {
     return readFile(this.file(key)).then(() => true, (e) => ((e as NodeJS.ErrnoException).code === "ENOENT" ? false : Promise.reject(e)));
@@ -125,7 +159,7 @@ export type MotionPreviewProvenance = {
   outputChecksum: string;
   generatedAt: string;
   latencyMs: number;
-  usage: { sessionSeconds: number; billedSeconds: number; chunks: number; frameChunks: number };
+  usage: { sessionSeconds: number; billedSeconds: number; generatedSeconds: number; chunks: number; frameChunks: number };
   costUsd: number;
   costBasis: string;
   costRate: ProviderCostRate;
@@ -135,7 +169,7 @@ export type MotionPreviewProvenance = {
 
 export type MotionPreviewResultSummary =
   | { ok: true; status: "created" | "reused"; assetId: string; checksum: string; durationSeconds: number; width: number; height: number; costUsd: number }
-  | { ok: false; stage: string; errors: string[] };
+  | { ok: false; stage: string; errors: string[]; run?: FailedRunReport };
 
 const stop = (stage: string, ...errors: string[]): MotionPreviewResultSummary => ({ ok: false, stage, errors });
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -268,7 +302,22 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
   try {
     result = await withTimeout(deps.provider.generate({ image: inputs.image, mimeType: "image/png", prompt: inputs.prompt, seed: req.seed, resolution: req.resolution }, { timeoutMs }), timeoutMs);
   } catch (error) {
-    return stop("provider", error instanceof ProviderError ? error.message : "Provider session failed.");
+    const message = error instanceof ProviderError ? error.message : "Provider session failed.";
+    const run: ProviderRunRecord =
+      error instanceof ProviderRunError
+        ? error.run
+        : { errorCategory: "provider", message, sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null };
+    const billedSeconds = !run.reachedReady ? 0 : run.readyToCloseSeconds === null ? null : Math.ceil(run.readyToCloseSeconds);
+    const report: FailedRunReport = {
+      ...run,
+      billedSeconds,
+      estimatedCostUsd: billedSeconds === null ? null : Math.round(billedSeconds * rate.usdPerSecond * 1e6) / 1e6,
+      costRate: rate,
+      costBasis: `${COST_BASIS} A session that never reached ready is not billed.`,
+      recordedAt: clock().toISOString(),
+    };
+    await deps.ledger.recordOutcome(key, { outcome: "failed", ...report }).catch(() => {});
+    return { ok: false, stage: "provider", errors: [message], run: report };
   }
   const latencyMs = Math.max(0, clock().getTime() - started.getTime());
 
@@ -317,7 +366,7 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
     outputChecksum: checksum,
     generatedAt,
     latencyMs,
-    usage: { sessionSeconds: result.sessionSeconds, billedSeconds, chunks: result.chunks.length, frameChunks },
+    usage: { sessionSeconds: result.sessionSeconds, billedSeconds, generatedSeconds: result.generatedSeconds, chunks: result.chunks.length, frameChunks },
     costUsd,
     costBasis: COST_BASIS,
     costRate: rate,

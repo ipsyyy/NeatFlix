@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -11,6 +11,7 @@ import { ProviderError, type ImageEditProvider } from "@/agents/media/gemini-pro
 import {
   attemptKey,
   executeMotionPreview,
+  ProviderRunError,
   FileAttemptLedger,
   loadVerifiedMotionPreview,
   validateMotionPreview,
@@ -71,6 +72,11 @@ class MemoryLedger implements AttemptLedger {
   async has(key: string) {
     return this.keys.has(key);
   }
+  readonly outcomes = new Map<string, Record<string, unknown>>();
+  async recordOutcome(key: string, record: Record<string, unknown>) {
+    assert.equal(this.outcomes.has(key), false, "an outcome is recorded once");
+    this.outcomes.set(key, record);
+  }
 }
 
 const box = (type: string, payload: number) => {
@@ -86,10 +92,14 @@ class FakeProvider implements MotionPreviewProvider {
   readonly provider = "reactor" as const;
   readonly model = "reactor/visko-orbis-stable";
   readonly inputs: { image: Uint8Array; prompt: string; seed: number; resolution: string }[] = [];
-  constructor(private readonly behave: "ok" | "fail" | "empty" | "four-chunks" = "ok") {}
+  constructor(private readonly behave: "ok" | "fail" | "empty" | "four-chunks" | "fail-after-ready" | "fail-before-ready" | "fail-unclosed" = "ok") {}
   async generate(input: { image: Uint8Array; prompt: string; seed: number; resolution: string }): Promise<MotionPreviewResult> {
     this.inputs.push(input);
     if (this.behave === "fail") throw new ProviderError("Reactor session stopped at connect: refused.");
+    const base = { sessionId: "sess_fail_1", commandsSent: ["set_resolution"], generatedSeconds: 0, resolution: null };
+    if (this.behave === "fail-after-ready") throw new ProviderRunError("Reactor session stopped at resolution: rejected.", { ...base, errorCategory: "resolution", message: "rejected", reachedReady: true, readyToCloseSeconds: 20.4 });
+    if (this.behave === "fail-before-ready") throw new ProviderRunError("Reactor session stopped at connect: timed out.", { ...base, sessionId: null, commandsSent: [], errorCategory: "connect", message: "timed out", reachedReady: false, readyToCloseSeconds: null });
+    if (this.behave === "fail-unclosed") throw new ProviderRunError("The session did not finish within 240 s.", { ...base, errorCategory: "timeout", message: "timeout", reachedReady: true, readyToCloseSeconds: null });
     const chunks = [0, 33, 33, ...(this.behave === "four-chunks" ? [33] : [])].map((framesEmitted, index) => ({ index, framesEmitted, audioSamples: 88000, atMs: 1000 + index * 1833 }));
     return {
       sessionId: "sess_test_1",
@@ -103,6 +113,7 @@ class FakeProvider implements MotionPreviewProvider {
       availableResolutions: ["1080p", "2k", "4k"],
       commandsSent: ["set_resolution", "set_seed", "set_image", "set_prompt", "start", "pause"],
       sessionSeconds: 21.4,
+      generatedSeconds: 3.667,
       runtime: { sdk: "@reactor-team/js-sdk@3.1.0", bundleSha256: "f".repeat(64), browser: "headless Chrome (local)" },
     };
   }
@@ -248,6 +259,39 @@ describe("Reactor motion preview: one attempt, fail closed", () => {
     assert.equal(await w.store.getMediaAsset(w.req.outputAssetId), null);
   });
 
+  it("retains each failed run's session, commands, billing estimate, and rate basis, beside the untouched claim", async () => {
+    const w = await world();
+    const r = await executeMotionPreview(w.req, w.deps({ provider: new FakeProvider("fail-after-ready") }));
+    assert.equal(r.ok, false);
+    const run = (r as { run?: Record<string, unknown> }).run!;
+    assert.equal(run.errorCategory, "resolution");
+    assert.equal(run.sessionId, "sess_fail_1");
+    assert.deepEqual(run.commandsSent, ["set_resolution"]);
+    assert.equal(run.readyToCloseSeconds, 20.4);
+    assert.equal(run.billedSeconds, 21, "billed per whole second from ready to close");
+    assert.equal(run.estimatedCostUsd, 0.21);
+    assert.equal(run.generatedSeconds, 0);
+    assert.equal((run.costRate as { source: string }).source, "test rate");
+    assert.match(String(run.costBasis), /not billed/);
+    const key = attemptKey(w.req);
+    assert.equal(w.ledger.outcomes.get(key)?.outcome, "failed", "outcome retained");
+    assert.equal(w.ledger.outcomes.get(key)?.sessionId, "sess_fail_1");
+    assert.equal(await w.ledger.has(key), true, "the claim stays");
+    assert.equal(JSON.stringify(run).includes("AAAA"), false);
+    const again = await executeMotionPreview(w.req, w.deps());
+    assert.equal(again.ok, false, "no second paid call");
+    assert.equal(w.provider.inputs.length, 0);
+  });
+
+  it("bills nothing for a session that never became ready, and leaves an unmeasured close unknown rather than zero", async () => {
+    const before = await world();
+    const a = (await executeMotionPreview(before.req, before.deps({ provider: new FakeProvider("fail-before-ready") }))) as { run?: Record<string, unknown> };
+    assert.deepEqual([a.run?.billedSeconds, a.run?.estimatedCostUsd, a.run?.reachedReady], [0, 0, false]);
+    const unclosed = await world();
+    const b = (await executeMotionPreview(unclosed.req, unclosed.deps({ provider: new FakeProvider("fail-unclosed") }))) as { run?: Record<string, unknown> };
+    assert.deepEqual([b.run?.billedSeconds, b.run?.estimatedCostUsd, b.run?.errorCategory], [null, null, "timeout"]);
+  });
+
   it("rejects malformed, missing, out-of-range, or non-16:9 output without storing anything", async () => {
     const bad: [string, Partial<MotionPreviewDeps> | ((w: Awaited<ReturnType<typeof world>>) => Partial<MotionPreviewDeps>)][] = [
       ["empty video", { provider: new FakeProvider("empty") }],
@@ -324,6 +368,12 @@ describe("file attempt ledger", () => {
       assert.equal(await new FileAttemptLedger(dir).claim(key, {}), "claimed");
       assert.equal(await new FileAttemptLedger(dir).claim(key, {}), "exists", "a fresh process sees the claim");
       assert.equal(await new FileAttemptLedger(dir).has(key), true);
+      const claimFile = join(dir, `${sha256Hex(key)}.json`);
+      const before = await readFile(claimFile, "utf8");
+      await new FileAttemptLedger(dir).recordOutcome(key, { outcome: "failed", sessionId: "sess_1" });
+      assert.equal(await readFile(claimFile, "utf8"), before, "the claim is never modified");
+      assert.match(await readFile(join(dir, `${sha256Hex(key)}.outcome.json`), "utf8"), /"outcome": "failed"/);
+      await assert.rejects(new FileAttemptLedger(dir).recordOutcome(key, { outcome: "again" }), /EEXIST/, "an outcome is written once");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

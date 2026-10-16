@@ -12,8 +12,10 @@ import {
   mintSessionToken,
   REACTOR_TOKENS_URL,
   ReactorOrbisProvider,
+  runRecordFromReport,
   tokenRequestBody,
 } from "@/agents/media/reactor-provider";
+import { ProviderRunError } from "@/agents/media/motion-preview";
 import { redactSecrets } from "@/agents/security/redact";
 
 const KEY = "rk_TESTnotarealkey0000000000";
@@ -75,7 +77,11 @@ describe("Reactor authentication", () => {
     const f = fakeFetch(() => new Response("{}", { status: 403 }));
     const provider = new ReactorOrbisProvider(KEY, { fetchImpl: f.impl, chromePath: "/nonexistent/chrome" });
     const input = { image: new Uint8Array([1]), mimeType: "image/png" as const, prompt: "p", seed: 42, resolution: "1080p" };
-    await assert.rejects(provider.generate(input, { timeoutMs: 5000 }), (e: Error) => e instanceof ProviderError && /HTTP 403/.test(e.message) && !e.message.includes(KEY));
+    await assert.rejects(provider.generate(input, { timeoutMs: 5000 }), (e: Error) => {
+      assert.ok(e instanceof ProviderRunError && /HTTP 403/.test(e.message) && !e.message.includes(KEY));
+      assert.deepEqual({ ...e.run, message: "" }, { errorCategory: "authentication", message: "", sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null });
+      return true;
+    });
     await assert.rejects(provider.generate(input, { timeoutMs: 5000 }), /already ran its one session/);
     assert.equal(f.calls.length, 1, "one token request, no retry, and no browser after a failed exchange");
   });
@@ -122,5 +128,38 @@ describe("browser page boundary", () => {
       assert.equal(/NEXT_PUBLIC_REACTOR/.test(text), false, f);
       if (/^(app|components|lib)\//.test(f)) assert.equal(/REACTOR_API_KEY|reactor-provider|@reactor-team\/js-sdk/.test(text), false, f);
     }
+  });
+});
+
+describe("failed-run records", () => {
+  const redact = (t: string) => t.split(JWT).join("[REDACTED]").split(KEY).join("[REDACTED]");
+  it("records the session, exact command names, ready-to-close seconds, and category", () => {
+    const run = runRecordFromReport(
+      { sessionId: "sess_abc123", commandsSent: ["set_resolution", "set_seed"], generatedSeconds: 0, resolution: { confirmedBy: "set_resolution reply" }, timings: { readyMs: 1000, disconnectedMs: 21_456 } },
+      "configure",
+      `set_seed timed out with ${JWT}`,
+      redact,
+    );
+    assert.deepEqual(run, { errorCategory: "configure", message: "set_seed timed out with [REDACTED]", sessionId: "sess_abc123", commandsSent: ["set_resolution", "set_seed"], reachedReady: true, readyToCloseSeconds: 20.46, generatedSeconds: 0, resolution: { confirmedBy: "set_resolution reply" } });
+  });
+
+  it("before readiness: nothing billed; after readiness with no observed close: unmeasured, not zero", () => {
+    assert.deepEqual([runRecordFromReport({ timings: { readyMs: null, disconnectedMs: 5 } }, "connect", "x").reachedReady, runRecordFromReport(null, "browser", "x").readyToCloseSeconds], [false, null]);
+    const open = runRecordFromReport({ timings: { readyMs: 10, disconnectedMs: null } }, "timeout", "x");
+    assert.equal(open.reachedReady, true);
+    assert.equal(open.readyToCloseSeconds, null);
+  });
+
+  it("carries no credentials or media payloads", () => {
+    const run = runRecordFromReport(
+      { sessionId: "sess_1", commandsSent: ["set_resolution", `jwt=${JWT}`], resolution: { rejected: `bad ${KEY}`, offered: ["2k"] }, timings: { readyMs: 0, disconnectedMs: 1000 }, ...({ videoBase64: "AAAA", imageBase64: "BBBB", jwt: JWT } as object) },
+      "resolution",
+      "rejected",
+      redact,
+    );
+    const text = JSON.stringify(run);
+    for (const banned of [JWT, KEY, "AAAA", "BBBB", "videoBase64", "imageBase64"]) assert.equal(text.includes(banned), false, banned);
+    assert.deepEqual(run.commandsSent, ["set_resolution"], "only command names");
+    assert.deepEqual(run.resolution, { rejected: "bad [REDACTED]", offered: ["2k"] });
   });
 });

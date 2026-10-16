@@ -6,8 +6,10 @@
  * fake client. It never reconnects, never restarts, never changes the prompt
  * after start, and always ends the session (non-recoverable disconnect).
  *
- * Sequence (I2V ordering from the schema): connect → state snapshot →
- * set_resolution → set_seed → uploadFile → set_image → set_prompt
+ * Sequence (I2V ordering from the schema): connect → set_resolution, confirmed
+ * by its documented reply (resolution_accepted) or failing on its documented
+ * rejection naming the offered list (no unsolicited state snapshot is awaited)
+ * → set_seed → uploadFile → set_image → set_prompt
  * (passthrough) → start → pause after the first frame-bearing chunk, so the
  * run stops after exactly two frame-bearing chunks (the first chunk is a
  * zero-frame warm-up per the prompt guide's runtime caveats) → requestClip
@@ -62,6 +64,10 @@ export type SessionReport = {
   imageAccepted: { width: number; height: number } | null;
   generation: Record<string, unknown> | null;
   moderation: unknown[];
+  /** How the delivery resolution was confirmed, or why it could not be. */
+  resolution: { confirmedBy: "set_resolution reply" } | { rejected: string; offered: string[] } | null;
+  /** Seconds of video the model reported generating (frames emitted / fps). */
+  generatedSeconds: number;
   timings: { connectStartMs: number; readyMs: number | null; startMs: number | null; pausedMs: number | null; disconnectedMs: number | null };
 };
 
@@ -85,7 +91,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 const int = (v: unknown): v is number => Number.isInteger(v);
 
 /** Runs the session once. Every failure ends the session and is reported, never retried. */
-export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, now: () => number): Promise<SessionOutcome> {
+export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, now: () => number, onReport?: (live: SessionReport) => void): Promise<SessionOutcome> {
   const report: SessionReport = {
     sessionId: null,
     commandsSent: [],
@@ -94,8 +100,12 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     imageAccepted: null,
     generation: null,
     moderation: [],
+    resolution: null,
+    generatedSeconds: 0,
     timings: { connectStartMs: now(), readyMs: null, startMs: null, pausedMs: null, disconnectedMs: null },
   };
+  // The live report, so a controller that must abort the page can still read what happened.
+  onReport?.(report);
   let failure: SessionFailure | null = null;
   let wake: () => void = () => {};
   const changed = () => wake();
@@ -165,6 +175,15 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
         break;
       }
       case "command_error":
+        if (data.command === "set_resolution") {
+          // Documented rejection: the reason names the deployment's offered resolutions.
+          const reason = String(data.reason ?? "").slice(0, 300);
+          // The requested value was just rejected, so it cannot be among the offered ones.
+          const offered = [...new Set(reason.match(/\b(?:\d{3,4}p|\d+k)\b/gi) ?? [])].filter((r) => r.toLowerCase() !== p.resolution.toLowerCase());
+          report.resolution = { rejected: reason, offered };
+          report.availableResolutions = offered;
+          return fail("resolution", `Resolution ${p.resolution} was rejected${offered.length ? `; offered: ${offered.join(", ")}` : ""}.`);
+        }
         return fail("command", `${String(data.command ?? "command").slice(0, 40)} rejected: ${String(data.reason ?? "").slice(0, 200)}`);
       case "generation_complete":
       case "generation_reset":
@@ -181,19 +200,23 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
   }) as never);
 
   const frameChunks = () => report.chunks.filter((c) => c.framesEmitted > 0).length;
+  const generatedSeconds = () => {
+    const fps = Number(report.generation?.fps);
+    const frames = report.chunks.reduce((n, c) => n + c.framesEmitted, 0);
+    return fps > 0 ? Math.round((frames / fps) * 1000) / 1000 : 0;
+  };
   try {
     // Connect once; the token can create exactly one session.
     await bounded(reactor.connect(p.jwt, { autoResumeTracks: true }), p.timeouts.connectMs, "connect", "connect");
     await until(() => report.timings.readyMs !== null, p.timeouts.connectMs, "connect", "the session to be ready");
     report.sessionId = reactor.getSessionId() ?? null;
     if (!report.sessionId) throw new SessionFailure("connect", "The SDK reported no session ID.");
-    await until(() => latestState !== null, p.timeouts.commandMs, "state", "the state snapshot");
-    const offered = (latestState as Record<string, unknown> | null)?.available_resolutions;
-    report.availableResolutions = Array.isArray(offered) ? offered.filter((r): r is string => typeof r === "string") : [];
-    if (!report.availableResolutions.includes(p.resolution)) throw new SessionFailure("state", `Resolution ${p.resolution} is not offered by this deployment.`);
-
-    const res = await command("set_resolution", { resolution: p.resolution }, "resolution_accepted", "configure");
-    if (res.resolution !== p.resolution) throw new SessionFailure("configure", "set_resolution did not accept the requested resolution.");
+    // Confirm the delivery resolution from set_resolution's own reply; never wait for an unsolicited snapshot.
+    const res = await command("set_resolution", { resolution: p.resolution }, "resolution_accepted", "resolution");
+    if (res.resolution !== p.resolution) throw new SessionFailure("resolution", "set_resolution did not accept the requested resolution.");
+    report.resolution = { confirmedBy: "set_resolution reply" };
+    const offered = latestState?.available_resolutions;
+    if (Array.isArray(offered)) report.availableResolutions = offered.filter((r): r is string => typeof r === "string");
     await command("set_seed", { seed: p.seed }, null, "configure");
 
     const ref = await bounded(reactor.uploadFile(new Blob([new Uint8Array(p.image)], { type: p.imageMimeType }), { name: p.imageName }), p.timeouts.commandMs, "upload", "the image upload");
@@ -246,6 +269,7 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     const video = new Uint8Array(await blob.arrayBuffer());
     if (failure) throw failure;
     finished = true;
+    report.generatedSeconds = generatedSeconds();
     return {
       ...report,
       ok: true,
@@ -255,7 +279,8 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
       clip: { kind: clip.kind, startMarker: clip.startMarker, endMarker: clip.endMarker, nowMarker: clip.nowMarker },
     };
   } catch (error) {
-    const f = error instanceof SessionFailure ? error : (failure ?? new SessionFailure("session", String((error as Error)?.message ?? error).slice(0, 200)));
+    const f = failure ?? (error instanceof SessionFailure ? error : new SessionFailure("session", String((error as Error)?.message ?? error).slice(0, 200)));
+    report.generatedSeconds = generatedSeconds();
     return { ...report, ok: false, stage: f.stage, error: f.message };
   } finally {
     finished = true;

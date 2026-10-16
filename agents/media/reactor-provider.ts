@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256Hex } from "./edited-still";
 import { ProviderError } from "./gemini-provider";
-import { REACTOR_GENERATOR, type MotionPreviewProvider, type MotionPreviewResult, type ProviderCostRate } from "./motion-preview";
+import { ProviderRunError, REACTOR_GENERATOR, type MotionPreviewProvider, type MotionPreviewResult, type ProviderCostRate, type ProviderRunRecord } from "./motion-preview";
 import { PREVIEW_MAX_BYTES } from "./mp4-validate";
 import { ORBIS_MODEL } from "./reactor-session";
 
@@ -272,6 +272,8 @@ type PageOutcome = Omit<MotionPreviewResult, "video" | "sessionSeconds" | "runti
   videoBase64?: string;
   videoMimeType: string;
   timings: { readyMs: number | null; disconnectedMs: number | null };
+  generatedSeconds?: number;
+  resolution?: unknown;
 };
 
 /** The production provider: one token, one browser, one page, one session. */
@@ -292,14 +294,38 @@ export class ReactorOrbisProvider implements MotionPreviewProvider {
   async generate(input: { image: Uint8Array; mimeType: "image/png"; prompt: string; seed: number; resolution: string }, options: { timeoutMs: number }): Promise<MotionPreviewResult> {
     if (this.used) throw new ProviderError("This provider already ran its one session.");
     this.used = true;
-    const bundle = await buildPageBundle();
-    const { jwt } = await mintSessionToken(this.apiKey, this.options.fetchImpl);
+    const redact = (s: unknown) => this.sensitive.reduce((t, secret) => t.split(secret).join("[REDACTED]"), String(s ?? ""));
+    const scrub = (s: unknown) => redact(s).slice(0, 300);
+    const failed = (category: string, message: string, live: LiveReport | null = null) => new ProviderRunError(scrub(message), runRecordFromReport(live, category, scrub(message), redact));
+    let bundle: Awaited<ReturnType<typeof buildPageBundle>>;
+    try {
+      bundle = await buildPageBundle();
+    } catch {
+      throw failed("browser", "The session page could not be built.");
+    }
+    let jwt: string;
+    try {
+      ({ jwt } = await mintSessionToken(this.apiKey, this.options.fetchImpl));
+    } catch (error) {
+      throw failed("authentication", error instanceof ProviderError ? error.message : "The Reactor token request failed.");
+    }
     this.sensitive.push(jwt);
-    const scrub = (s: unknown) => this.sensitive.reduce((t, secret) => t.split(secret).join("[REDACTED]"), String(s ?? "")).slice(0, 300);
     let page: SessionPage | null = null;
     try {
       page = await openSessionPage(this.options.chromePath ?? DEFAULT_CHROME, bundle);
-      const cdp = page.cdp;
+    } catch (error) {
+      throw failed("browser", error instanceof ProviderError ? error.message : "Headless Chrome could not open the session page.");
+    }
+    const cdp = page.cdp;
+    // Ends the session from the page (non-recoverable) and reads what it recorded, bounded.
+    const abort = async (): Promise<LiveReport | null> => {
+      const r = await Promise.race([
+        cdp.send("Runtime.evaluate", { expression: "globalThis.__nfAbort()", awaitPromise: true, returnByValue: true }).catch(() => null),
+        new Promise<null>((res) => setTimeout(() => res(null), 8000)),
+      ]);
+      return ((r?.result as { value?: LiveReport | null } | undefined)?.value ?? null) as LiveReport | null;
+    };
+    try {
       const params = {
         jwt,
         imageBase64: Buffer.from(input.image).toString("base64"),
@@ -311,17 +337,19 @@ export class ReactorOrbisProvider implements MotionPreviewProvider {
         maxVideoBytes: PREVIEW_MAX_BYTES,
         timeouts: { connectMs: 90_000, commandMs: 20_000, generationMs: 60_000, clipMs: 30_000, downloadMs: 60_000 },
       };
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const evaluated = await Promise.race([
         cdp.send("Runtime.evaluate", { expression: `globalThis.__nfRunOrbis(${JSON.stringify(params)})`, awaitPromise: true, returnByValue: true }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new ProviderError("The browser session timed out.")), options.timeoutMs)),
-      ]);
-      if (evaluated.exceptionDetails) throw new ProviderError("The session page raised an exception.");
+        new Promise<"timeout">((res) => (timer = setTimeout(() => res("timeout"), options.timeoutMs))),
+      ]).finally(() => clearTimeout(timer));
+      if (evaluated === "timeout") throw failed("timeout", `The session did not finish within ${Math.round(options.timeoutMs / 1000)} s.`, await abort());
+      if (evaluated.exceptionDetails) throw failed("page", "The session page raised an exception.", await abort());
       const outcome = (evaluated.result as { value?: PageOutcome })?.value;
-      if (!outcome || typeof outcome !== "object") throw new ProviderError("The session page returned nothing.");
-      if (!outcome.ok) throw new ProviderError(`Reactor session stopped at ${scrub(outcome.stage)}: ${scrub(outcome.error)}`);
-      if (typeof outcome.videoBase64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(outcome.videoBase64)) throw new ProviderError("The session page returned no video.");
+      if (!outcome || typeof outcome !== "object") throw failed("page", "The session page returned nothing.", await abort());
+      if (!outcome.ok) throw failed(String(outcome.stage ?? "session"), `Reactor session stopped at ${scrub(outcome.stage)}: ${scrub(outcome.error)}`, outcome);
+      if (typeof outcome.videoBase64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(outcome.videoBase64)) throw failed("recording", "The session page returned no video.", outcome);
       const { readyMs, disconnectedMs } = outcome.timings;
-      if (typeof readyMs !== "number" || typeof disconnectedMs !== "number" || disconnectedMs < readyMs) throw new ProviderError("The session duration was not measured.");
+      if (typeof readyMs !== "number" || typeof disconnectedMs !== "number" || disconnectedMs < readyMs) throw failed("session", "The session duration was not measured.", outcome);
       return {
         sessionId: String(outcome.sessionId),
         video: new Uint8Array(Buffer.from(outcome.videoBase64, "base64")),
@@ -334,14 +362,49 @@ export class ReactorOrbisProvider implements MotionPreviewProvider {
         availableResolutions: outcome.availableResolutions,
         commandsSent: outcome.commandsSent,
         sessionSeconds: (disconnectedMs - readyMs) / 1000,
+        generatedSeconds: Number(outcome.generatedSeconds) || 0,
         runtime: { sdk: REACTOR_SDK, bundleSha256: bundle.sha256, browser: "headless Chrome (local)" },
       };
     } catch (error) {
-      throw error instanceof ProviderError ? new ProviderError(scrub(error.message)) : new ProviderError("The Reactor browser session failed.");
+      if (error instanceof ProviderRunError) throw error;
+      throw failed("browser", error instanceof ProviderError ? error.message : "The Reactor browser session failed.", await abort());
     } finally {
-      await page?.close();
+      await page.close();
     }
   }
+}
+
+/** The page's report fields a run record is built from (never media or credentials). */
+export type LiveReport = {
+  sessionId?: string | null;
+  commandsSent?: unknown;
+  generatedSeconds?: unknown;
+  resolution?: unknown;
+  timings?: { readyMs?: number | null; disconnectedMs?: number | null };
+};
+
+/** Builds a failed run's record from whatever the page reported, redacted and without payloads. */
+export function runRecordFromReport(live: LiveReport | null, errorCategory: string, message: string, redact: (s: string) => string = (s) => s): ProviderRunRecord {
+  const readyMs = live?.timings?.readyMs;
+  const closedMs = live?.timings?.disconnectedMs;
+  const reachedReady = typeof readyMs === "number" && Number.isFinite(readyMs);
+  const commands = Array.isArray(live?.commandsSent) ? live.commandsSent.filter((c): c is string => typeof c === "string" && /^[a-zA-Z_]{1,40}$/.test(c)) : [];
+  let resolution: unknown = null;
+  try {
+    resolution = live?.resolution == null ? null : JSON.parse(redact(JSON.stringify(live.resolution)));
+  } catch {
+    resolution = null;
+  }
+  return {
+    errorCategory: errorCategory.slice(0, 40),
+    message: redact(message).slice(0, 300),
+    sessionId: typeof live?.sessionId === "string" && /^[A-Za-z0-9_.:-]{1,200}$/.test(live.sessionId) ? live.sessionId : null,
+    commandsSent: commands,
+    reachedReady,
+    readyToCloseSeconds: reachedReady && typeof closedMs === "number" && closedMs >= (readyMs as number) ? Math.round((closedMs - (readyMs as number)) / 10) / 100 : null,
+    generatedSeconds: typeof live?.generatedSeconds === "number" && live.generatedSeconds >= 0 ? live.generatedSeconds : 0,
+    resolution,
+  };
 }
 
 /** The production provider from server env, or null when the key is not configured. */

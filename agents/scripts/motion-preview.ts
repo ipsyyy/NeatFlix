@@ -88,7 +88,11 @@ async function main(): Promise<number> {
   if (!page.webrtc || !page.wasm || page.externalRequests.length > 0) return (out("The page runtime is not as required (WebRTC or the SDK binding missing, or a non-local request). Nothing was done."), 1);
 
   if (!approved) {
-    out(`Preflight only: no Reactor request was made. To run the single paid session, pass --approve-paid-call=${req.planId}.`);
+    out(
+      claimed && !existing
+        ? "Preflight only: no Reactor request was made. A paid run would refuse: this request's single paid attempt is already claimed, and it is never retried."
+        : `Preflight only: no Reactor request was made. To run the single paid session, pass --approve-paid-call=${req.planId}.`,
+    );
     return 0;
   }
   const provider = createReactorProviderFromEnv(process.env);
@@ -105,7 +109,17 @@ async function main(): Promise<number> {
   out("Approved: making exactly one Reactor session.");
   const result = await executeMotionPreview(req, { workflow, store, storage, provider, ledger, probe: (b) => ffprobeVideo(b), costRate, timeoutMs: SESSION_TIMEOUT_MS });
   const scrub = (s: string) => redactSecrets(s, [...secrets, ...provider.sensitive]);
-  if (!result.ok) return (out(scrub(`STOPPED at ${result.stage}: ${result.errors.slice(0, 5).join("; ")}`)), 1);
+  if (!result.ok) {
+    out(scrub(`STOPPED at ${result.stage}: ${result.errors.slice(0, 5).join("; ")}`));
+    const run = result.run;
+    if (run) {
+      out(scrub(`Failed run: category ${run.errorCategory}; session ${run.sessionId ?? "unknown (not reported)"}; reached ready ${run.reachedReady}; commands sent [${run.commandsSent.join(", ")}]`));
+      out(scrub(`Billing: ready-to-close ${run.readyToCloseSeconds ?? "unmeasured"} s, billed ${run.billedSeconds ?? "unknown"} s, generated ${run.generatedSeconds} s, estimated cost ${run.estimatedCostUsd ?? "unknown"} USD at ${run.costRate.usdPerSecond} USD/s (${run.costRate.source})`));
+      if (run.resolution) out(scrub(`Resolution: ${JSON.stringify(run.resolution)}`));
+      out("The failed attempt and its outcome are retained in the local attempt ledger; no retry will be made.");
+    }
+    return 1;
+  }
   out(scrub(`${result.status === "created" ? "Created" : "Reused"} ${result.assetId}: ${result.checksum}; ${result.durationSeconds.toFixed(3)} s at ${result.width}×${result.height}; estimated cost ${result.costUsd} USD; human preview review pending.`));
   return 0;
 }

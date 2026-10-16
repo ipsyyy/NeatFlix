@@ -16,6 +16,14 @@ type Scenario = {
   dropAfterReady?: boolean;
   moderation?: boolean;
   chunkMs?: number;
+  /** Broadcast the documented state snapshot on connect (the live deployment did not). */
+  initialState?: boolean;
+  /** Never reach ready after connect. */
+  neverReady?: boolean;
+  /** Never reply to this command. */
+  hang?: string;
+  /** Acknowledge set_resolution with a different resolution. */
+  ackResolution?: string;
 };
 
 /** A fake Reactor client that follows the documented Visko Orbis Stable protocol. */
@@ -44,9 +52,10 @@ class FakeReactor implements ReactorLike {
   async connect(jwt: string) {
     this.connects++;
     assert.equal(jwt, "header.payload.signature");
+    if (this.s.neverReady) return;
     setImmediate(() => {
       this.emit("statusChanged", "ready");
-      this.message("state", { available_resolutions: this.s.resolutions ?? ["1080p", "2k", "4k"], seed: 42, has_image: false, has_prompt: false });
+      if (this.s.initialState ?? true) this.message("state", { available_resolutions: this.s.resolutions ?? ["1080p", "2k", "4k"], seed: 42, has_image: false, has_prompt: false });
       if (this.s.dropAfterReady) setImmediate(() => this.emit("statusChanged", "disconnected"));
       if (this.s.moderation) setImmediate(() => this.emit("runtimeMessage", { type: "moderation", data: { action: "warn" } }));
     });
@@ -87,13 +96,21 @@ class FakeReactor implements ReactorLike {
     this.calls.push(name);
     this.commands.push({ name, data });
     if (this.s.refuse === name) return undefined;
+    if (this.s.hang === name) return new Promise(() => {});
     if (this.s.commandError === name) {
       setImmediate(() => this.message("command_error", { command: name, reason: "rejected by test" }));
       return new Promise(() => {});
     }
     switch (name) {
-      case "set_resolution":
-        return { type: "resolution_accepted", data: { width: 832, height: 480, resolution: data.resolution } };
+      case "set_resolution": {
+        const offered = this.s.resolutions ?? ["1080p", "2k", "4k"];
+        if (!offered.includes(String(data.resolution))) {
+          // Documented: rejected with command_error naming the offered list; sendCommand resolves undefined.
+          setImmediate(() => this.message("command_error", { command: "set_resolution", reason: `resolution '${String(data.resolution)}' is not available; choose one of: ${offered.join(", ")}` }));
+          return new Promise((r) => setTimeout(() => r(undefined), 5));
+        }
+        return { type: "resolution_accepted", data: { width: 832, height: 480, resolution: this.s.ackResolution ?? data.resolution } };
+      }
       case "set_seed":
         return undefined;
       case "set_image":
@@ -189,10 +206,63 @@ describe("Orbis session: one bounded run", () => {
     }
   });
 
-  it("refuses a resolution the deployment does not offer, before any command", async () => {
-    const { fake, outcome } = await run({ resolutions: ["2k"] });
+  it("starts without waiting for an initial state event, confirming 1080p from the set_resolution acknowledgement", async () => {
+    const { fake, outcome } = await run({ initialState: false });
+    assert.ok(outcome.ok, JSON.stringify(outcome));
+    assert.equal(fake.calls[0], "set_resolution", "resolution is confirmed first, by command");
+    assert.deepEqual(fake.commands[0].data, { resolution: "1080p" });
+    assert.deepEqual(outcome.resolution, { confirmedBy: "set_resolution reply" });
+    assert.equal(outcome.generatedSeconds, 3.667, "66 frames at 18 fps");
+  });
+
+  it("fails on a documented resolution rejection, recording the offered alternatives, and sends no generation command", async () => {
+    const { fake, outcome } = await run({ initialState: false, resolutions: ["2k", "4k"] });
     assert.equal(outcome.ok, false);
-    assert.deepEqual(fake.calls, []);
+    assert.equal((outcome as { stage: string }).stage, "resolution");
+    assert.deepEqual(outcome.resolution, { rejected: "resolution '1080p' is not available; choose one of: 2k, 4k", offered: ["2k", "4k"] });
+    assert.deepEqual(fake.calls, ["set_resolution"], "no upload, image, prompt, or start");
+    assert.deepEqual(fake.disconnects, [false]);
+  });
+
+  it("sends no generation command when the resolution cannot be confirmed", async () => {
+    for (const s of [{ refuse: "set_resolution" }, { ackResolution: "2k" }, { hang: "set_resolution" }] satisfies Scenario[]) {
+      const { fake, outcome } = await run({ initialState: false, ...s }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+      assert.equal(outcome.ok, false, JSON.stringify(s));
+      assert.equal((outcome as { stage: string }).stage, "resolution", JSON.stringify(s));
+      assert.deepEqual(fake.calls, ["set_resolution"], JSON.stringify(s));
+      assert.equal(Boolean(outcome.resolution && "confirmedBy" in outcome.resolution), false, "never recorded as confirmed");
+    }
+  });
+
+  it("reports a timeout before readiness: never ready, nothing sent, nothing billed", async () => {
+    const { fake, outcome } = await run({ neverReady: true }, { timeouts: { connectMs: 40, commandMs: 2000, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    assert.equal(outcome.ok, false);
+    assert.equal((outcome as { stage: string }).stage, "connect");
+    assert.equal(outcome.timings.readyMs, null);
+    assert.deepEqual(outcome.commandsSent, []);
+    assert.equal(outcome.generatedSeconds, 0);
+    assert.deepEqual(fake.disconnects, [false]);
+  });
+
+  it("reports a timeout after readiness with the session ID, commands, and close time", async () => {
+    const { outcome } = await run({ initialState: false, hang: "set_seed" }, { timeouts: { connectMs: 2000, commandMs: 40, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.sessionId, "sess_test_1");
+    assert.deepEqual(outcome.commandsSent, ["set_resolution", "set_seed"]);
+    assert.equal(typeof outcome.timings.readyMs, "number");
+    assert.equal(typeof outcome.timings.disconnectedMs, "number");
+    assert.equal(JSON.stringify(outcome).includes("header.payload.signature"), false);
+  });
+
+  it("still requires the state checks after configuration: seed and conditions", async () => {
+    const fake = new FakeReactor({ initialState: false });
+    const original = fake.sendCommand.bind(fake);
+    // A deployment that never broadcasts state at all cannot confirm the seed: fail closed before start.
+    fake.sendCommand = async (name, data) => (name === "set_prompt" ? { type: "prompt_accepted", data: { prompt: (data as { prompt: string }).prompt } } : original(name, data));
+    const outcome = await runOrbisSession(fake, params({ timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } }), fake.now);
+    assert.equal(outcome.ok, false);
+    assert.equal((outcome as { stage: string }).stage, "conditions");
+    assert.equal(fake.calls.includes("start"), false);
   });
 
   it("never reconnects when the connection drops", async () => {
