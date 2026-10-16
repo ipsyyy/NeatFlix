@@ -6,7 +6,7 @@
  * must give up, __nfAbort ends the session (non-recoverable) and returns the
  * live report; reports never carry the token or media.
  */
-import { Reactor } from "@reactor-team/js-sdk";
+import { downloadClipAsFile, Reactor, type Clip } from "@reactor-team/js-sdk";
 import { ORBIS_MODEL, runOrbisSession, type ReactorLike, type SessionParams, type SessionReport } from "./reactor-session";
 
 type PageParams = Omit<SessionParams, "image"> & { imageBase64: string };
@@ -27,7 +27,9 @@ async function run(params: PageParams) {
   const { imageBase64, ...rest } = params;
   const image = Uint8Array.from(atob(imageBase64), (c) => c.charCodeAt(0));
   reactor = new Reactor({ modelName: ORBIS_MODEL }) as unknown as ReactorLike;
-  const outcome = await runOrbisSession(reactor, { ...rest, image }, () => performance.now(), (r) => (live = r));
+  // After the session closes, the clip is fetched with the SDK's standalone download (no live session needed).
+  const download = (clip: Parameters<typeof downloadClipAsFile>[0] | object, o: { jwt: string; signal: AbortSignal }) => downloadClipAsFile(clip as Clip, null, o);
+  const outcome = await runOrbisSession(reactor, { ...rest, image }, () => performance.now(), (r) => (live = r), () => Date.now(), download);
   if (!outcome.ok) return outcome;
   const { video, ...report } = outcome;
   return { ...report, videoBase64: toBase64(video) };

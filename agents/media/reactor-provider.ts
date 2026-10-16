@@ -275,6 +275,7 @@ type PageOutcome = Omit<MotionPreviewResult, "video" | "sessionSeconds" | "runti
   generatedSeconds?: number;
   startAcknowledgedBy?: string | null;
   download?: { deadlineMs: number | null; waitMs: number | null } | null;
+  clipRequestAcknowledgedAtEpochMs?: number | null;
   resolution?: unknown;
 };
 
@@ -367,6 +368,7 @@ export class ReactorOrbisProvider implements MotionPreviewProvider {
         startAcknowledgedBy: String(outcome.startAcknowledgedBy),
         download: { deadlineMs: Number(outcome.download?.deadlineMs), waitMs: Number(outcome.download?.waitMs) },
         sessionClosedAt: new Date(Number(outcome.timings.disconnectedEpochMs)).toISOString(),
+        clipRequestAcknowledgedAt: new Date(Number(outcome.clipRequestAcknowledgedAtEpochMs)).toISOString(),
         generatedSeconds: Number(outcome.generatedSeconds) || 0,
         runtime: { sdk: REACTOR_SDK, bundleSha256: bundle.sha256, browser: "headless Chrome (local)" },
       };
@@ -388,6 +390,7 @@ export type LiveReport = {
   startAcknowledgedBy?: unknown;
   clip?: unknown;
   download?: unknown;
+  clipRequestAcknowledgedAtEpochMs?: unknown;
   timings?: { readyMs?: number | null; disconnectedMs?: number | null; disconnectedEpochMs?: number | null };
 };
 
@@ -434,6 +437,7 @@ export function runRecordFromReport(live: LiveReport | null, errorCategory: stri
     clip: clipMarkers(live?.clip),
     download: downloadRecord(live?.download),
     sessionClosedAt: finite(live?.timings?.disconnectedEpochMs) !== null ? new Date(live!.timings!.disconnectedEpochMs as number).toISOString() : null,
+    clipRequestAcknowledgedAt: finite(live?.clipRequestAcknowledgedAtEpochMs) !== null ? new Date(live!.clipRequestAcknowledgedAtEpochMs as number).toISOString() : null,
   };
 }
 

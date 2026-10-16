@@ -34,6 +34,9 @@ type Scenario = {
   readyInMs?: number | null;
   downloadAfterMs?: number;
   downloadNever?: boolean;
+  downloadFails?: boolean;
+  /** Fields to override on the returned clip (missing identifiers, wrong markers). */
+  clip?: Partial<SdkClip>;
 };
 
 /** A fake Reactor client that follows the documented Visko Orbis Stable protocol. */
@@ -162,8 +165,10 @@ class FakeReactor implements ReactorLike {
   async requestClip(seconds: number): Promise<SdkClip> {
     this.calls.push("requestClip");
     this.clipSeconds = seconds;
-    const ready = this.s.readyInMs === undefined ? 0 : this.s.readyInMs === null ? Number.NaN : Date.now() + this.s.readyInMs;
-    return { sessionId: "sess_test_1", kind: "snap", startMarker: 10 - seconds, endMarker: 10, nowMarker: 10, predictedReadyAtMs: ready, playlistUrl: "https://example.invalid/playlist.m3u8" };
+    const ready = this.s.readyInMs === undefined ? Date.now() : this.s.readyInMs === null ? Number.NaN : Date.now() + this.s.readyInMs;
+    // The recording timeline holds only produced frames: 66 frames at 18 fps.
+    const span = 66 / 18;
+    return { sessionId: "sess_test_1", kind: "snap", startMarker: 0, endMarker: span, nowMarker: span, predictedReadyAtMs: ready, playlistUrl: "https://example.invalid/playlist.m3u8", ...this.s.clip };
   }
   async downloadClipAsFile(_clip: SdkClip, filename: null, options: { jwt: string; signal?: AbortSignal }) {
     this.calls.push("downloadClipAsFile");
@@ -176,6 +181,7 @@ class FakeReactor implements ReactorLike {
     return new Promise<Blob>((resolve, reject) => {
       const done = () => ((this.downloading = false), resolve(new Blob([new Uint8Array(20_000)], { type: "video/mp4" })));
       options.signal?.addEventListener("abort", () => ((this.downloading = false), reject(new Error("AbortError"))));
+      if (this.s.downloadFails) return setTimeout(() => ((this.downloading = false), reject(new Error("CHUNK_FETCH_FAILED"))), 5);
       if (!this.s.downloadNever) setTimeout(done, this.s.downloadAfterMs ?? 0);
     });
   }
@@ -351,32 +357,73 @@ describe("Orbis session: one bounded run", () => {
 
   const narrow = { slackMs: 40, transferMs: 40, maxMs: 300 };
 
-  it("waits for a delayed clip and retrieves it within the derived deadline, then closes the session", async () => {
-    // Readiness lands after the post-pause quiet window (~2.13 s), so the download must wait for it.
-    const { fake, outcome } = await run({ initialState: false, readyInMs: 2300, downloadAfterMs: 200 }, { clipLimits: narrow });
+  it("closes the session right after the clip request, then retrieves a delayed clip within the derived deadline", async () => {
+    const { fake, outcome } = await run({ initialState: false, readyInMs: 200, downloadAfterMs: 150 }, { clipLimits: narrow });
     assert.ok(outcome.ok, JSON.stringify(outcome));
     assert.equal(outcome.download?.outcome, "downloaded");
     assert.ok(outcome.download!.deadlineMs! > narrow.slackMs + narrow.transferMs && outcome.download!.deadlineMs! <= narrow.maxMs, `deadline ${outcome.download?.deadlineMs}`);
-    assert.ok(outcome.download!.waitMs! >= 190, "waited for the delayed clip");
-    assert.ok(outcome.clip && outcome.clip.predictedReadyInMs !== null && outcome.clip.predictedReadyInMs >= 2200);
+    assert.ok(outcome.download!.waitMs! >= 140, "waited for the delayed clip after closing");
+    assert.equal(fake.downloadsAfterDisconnect, 1, "the download ran after the paid session closed");
+    assert.equal(fake.downloadInFlightAtDisconnect, false, "the session closed before the download began");
+    assert.deepEqual(fake.disconnects, [false], "closed exactly once");
+    assert.ok(outcome.clipRequestAcknowledgedAtEpochMs! <= outcome.timings.disconnectedEpochMs!);
+    assert.equal(fake.calls.filter((c) => c === "requestClip").length, 1);
     assert.equal(JSON.stringify(outcome).includes("example.invalid"), false, "the clip URL is never reported");
-    assert.equal(fake.downloadInFlightAtDisconnect, false, "the download ended before the session closed");
   });
 
-  it("aborts at the deadline and closes the session at once; nothing is fetched after closing", async () => {
+  it("times out the post-close download at the deadline, aborting it, without reconnecting or retrying", async () => {
     const { fake, outcome } = await run({ initialState: false, readyInMs: 20, downloadNever: true }, { clipLimits: narrow });
     assert.equal(outcome.ok, false);
     assert.equal((outcome as { stage: string }).stage, "download");
     assert.equal(outcome.download?.outcome, "deadline");
     assert.equal(fake.downloadSignal?.aborted, true, "the SDK download was aborted");
-    assert.equal(fake.downloadInFlightAtDisconnect, false, "no polling continued into or past the close");
-    assert.equal(fake.downloadsAfterDisconnect, 0);
+    assert.equal(fake.calls.filter((c) => c === "downloadClipAsFile").length, 1, "no retry");
+    assert.equal(fake.connects, 1, "no reconnect");
     assert.deepEqual(fake.disconnects, [false]);
     assert.ok(outcome.download!.waitMs! <= narrow.maxMs + 100);
   });
 
-  it("does not wait at all when the predicted readiness is beyond the firm bound, or missing", async () => {
-    for (const readyInMs of [10_000, null]) {
+  it("does not retry a failed post-close download", async () => {
+    const { fake, outcome } = await run({ initialState: false, downloadFails: true }, { clipLimits: narrow });
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.download?.outcome, "failed");
+    assert.equal(fake.calls.filter((c) => c === "downloadClipAsFile").length, 1);
+    assert.equal(fake.calls.filter((c) => c === "requestClip").length, 1);
+  });
+
+  it("fails closed on a clip with missing identifiers or mismatched markers, before closing to download", async () => {
+    const bad: Partial<SdkClip>[] = [
+      { playlistUrl: "" },
+      { sessionId: "someone-elses-session" },
+      { startMarker: Number.NaN },
+      { predictedReadyAtMs: Number.NaN },
+      { startMarker: 0, endMarker: 4.6, nowMarker: 4.6 },
+      { startMarker: 2, endMarker: 1, nowMarker: 3 },
+    ];
+    for (const clip of bad) {
+      const { fake, outcome } = await run({ initialState: false, clip });
+      assert.equal(outcome.ok, false, JSON.stringify(clip));
+      assert.equal((outcome as { stage: string }).stage, "capture", JSON.stringify(clip));
+      assert.equal(fake.calls.includes("downloadClipAsFile"), false, `${JSON.stringify(clip)}: nothing downloaded`);
+      assert.equal(fake.calls.filter((c) => c === "requestClip").length, 1, "the clip is requested exactly once");
+      assert.deepEqual(fake.disconnects, [false]);
+    }
+  });
+
+  it("requests the clip exactly once even when the first request fails", async () => {
+    const fake = new FakeReactor({ initialState: false });
+    fake.requestClip = async () => {
+      fake.calls.push("requestClip");
+      throw new Error("REQUEST_TIMEOUT");
+    };
+    const outcome = await runOrbisSession(fake, params(), fake.now);
+    assert.equal(outcome.ok, false);
+    assert.equal(fake.calls.filter((c) => c === "requestClip").length, 1);
+    assert.equal(outcome.commandsSent.filter((c) => c === "requestClip").length, 1);
+  });
+
+  it("does not wait at all when the predicted readiness is beyond the firm bound (a missing one fails at capture)", async () => {
+    for (const readyInMs of [10_000]) {
       const { fake, outcome } = await run({ initialState: false, readyInMs }, { clipLimits: narrow });
       assert.equal(outcome.ok, false, String(readyInMs));
       assert.equal((outcome as { stage: string }).stage, "download");

@@ -93,17 +93,17 @@ class FakeProvider implements MotionPreviewProvider {
   readonly provider = "reactor" as const;
   readonly model = "reactor/visko-orbis-stable";
   readonly inputs: { image: Uint8Array; prompt: string; seed: number; resolution: string }[] = [];
-  constructor(private readonly behave: "ok" | "fail" | "empty" | "four-chunks" | "fail-after-ready" | "fail-before-ready" | "fail-unclosed" | "fail-download" | "fragmented" = "ok") {}
+  constructor(private readonly behave: "ok" | "fail" | "empty" | "four-chunks" | "fail-after-ready" | "fail-before-ready" | "fail-unclosed" | "fail-download" | "fragmented" | "marker-mismatch" | "closed-late" = "ok") {}
   async generate(input: { image: Uint8Array; prompt: string; seed: number; resolution: string }): Promise<MotionPreviewResult> {
     this.inputs.push(input);
     if (this.behave === "fail") throw new ProviderError("Reactor session stopped at connect: refused.");
-    const base = { sessionId: "sess_fail_1", commandsSent: ["set_resolution"], generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null };
+    const base = { sessionId: "sess_fail_1", commandsSent: ["set_resolution"], generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null, clipRequestAcknowledgedAt: null };
     if (this.behave === "fail-after-ready") throw new ProviderRunError("Reactor session stopped at resolution: rejected.", { ...base, errorCategory: "resolution", message: "rejected", reachedReady: true, readyToCloseSeconds: 20.4 });
     if (this.behave === "fail-before-ready") throw new ProviderRunError("Reactor session stopped at connect: timed out.", { ...base, sessionId: null, commandsSent: [], errorCategory: "connect", message: "timed out", reachedReady: false, readyToCloseSeconds: null });
     if (this.behave === "fail-download")
       throw new ProviderRunError("Reactor session stopped at download: Timed out waiting for the clip download.", {
         ...base, commandsSent: ["set_resolution", "set_seed", "set_image", "set_prompt", "start", "pause"], errorCategory: "download", message: "timed out", reachedReady: true, readyToCloseSeconds: 41.2, generatedSeconds: 3.667,
-        startAcknowledgedBy: "broadcast", clip: { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200 }, download: { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline" }, sessionClosedAt: "2026-10-16T18:00:41.000Z",
+        startAcknowledgedBy: "broadcast", clip: { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200 }, download: { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline" }, sessionClosedAt: "2026-10-16T18:00:07.000Z", clipRequestAcknowledgedAt: "2026-10-16T18:00:06.500Z",
       });
     if (this.behave === "fail-unclosed") throw new ProviderRunError("The session did not finish within 240 s.", { ...base, errorCategory: "timeout", message: "timeout", reachedReady: true, readyToCloseSeconds: null });
     const chunks = [0, 33, 33, ...(this.behave === "four-chunks" ? [33] : [])].map((framesEmitted, index) => ({ index, framesEmitted, audioSamples: 88000, atMs: 1000 + index * 1833 }));
@@ -112,10 +112,11 @@ class FakeProvider implements MotionPreviewProvider {
       video: this.behave === "empty" ? new Uint8Array() : this.behave === "fragmented" ? FRAGMENTED : VIDEO,
       videoMimeType: "video/mp4",
       requestedClipSeconds: 3.916,
-      clip: { kind: "snap", startMarker: 6.1, endMarker: 10.0, nowMarker: 10.0, predictedReadyInMs: 4200 },
+      clip: { kind: "snap", startMarker: 0, endMarker: this.behave === "marker-mismatch" ? 4.6 : 3.667, nowMarker: 4.6, predictedReadyInMs: 4200 },
       startAcknowledgedBy: "broadcast",
       download: { deadlineMs: 34_200, waitMs: 5100 },
-      sessionClosedAt: "2026-10-16T18:00:30.000Z",
+      clipRequestAcknowledgedAt: "2026-10-16T18:00:29.500Z",
+      sessionClosedAt: this.behave === "closed-late" ? "2026-10-16T18:02:00.000Z" : "2026-10-16T18:00:30.000Z",
       chunks,
       generation: { fps: 18, frames_per_chunk: 33, resolution: "1080p", image_conditioned: true },
       imageAccepted: { width: 832, height: 480 },
@@ -298,8 +299,9 @@ describe("Reactor motion preview: one attempt, fail closed", () => {
     assert.equal(r.run?.errorCategory, "download");
     assert.equal(r.run?.startAcknowledgedBy, "broadcast");
     assert.deepEqual(r.run?.clip, { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200 });
+    assert.equal(r.run?.clipRequestAcknowledgedAt, "2026-10-16T18:00:06.500Z");
     assert.deepEqual(r.run?.download, { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline" });
-    assert.equal(r.run?.sessionClosedAt, "2026-10-16T18:00:41.000Z");
+    assert.equal(r.run?.sessionClosedAt, "2026-10-16T18:00:07.000Z");
     assert.equal(r.run?.generatedSeconds, 3.667);
     assert.equal(r.run?.billedSeconds, 42);
     assert.equal(r.run?.estimatedCostUsd, 0.42);
@@ -323,7 +325,10 @@ describe("Reactor motion preview: one attempt, fail closed", () => {
     const p = (await w.store.getMediaAsset(w.req.outputAssetId))!.provenance as MotionPreviewProvenance;
     assert.equal(p.video.structure, "fragmented");
     assert.equal(p.startAcknowledgedBy, "broadcast");
-    assert.deepEqual([p.recording.predictedReadyInMs, p.recording.downloadDeadlineMs, p.recording.downloadWaitMs], [4200, 34_200, 5100]);
+    assert.deepEqual([p.recording.predictedReadyInMs, p.recording.downloadDeadlineMs, p.recording.postCloseWaitMs, p.recording.postCloseResult], [4200, 34_200, 5100, "downloaded"]);
+    assert.equal(p.recording.sessionClosedBeforeDownload, true);
+    assert.equal(p.recording.clipRequestAcknowledgedAt, "2026-10-16T18:00:29.500Z");
+    assert.equal(JSON.stringify(p).includes("playlist"), false, "no clip URL in provenance");
     assert.equal(p.sessionClosedAt, "2026-10-16T18:00:30.000Z");
     assert.equal(p.usage.generatedSeconds, 3.667);
   });
@@ -337,6 +342,8 @@ describe("Reactor motion preview: one attempt, fail closed", () => {
       ["infinite", { probe: async () => ({ ...PROBE, durationSeconds: Number.POSITIVE_INFINITY }) }],
       ["4:3", { probe: async () => ({ ...PROBE, video: { ...PROBE.video!, width: 1440, height: 1080 } }) }],
       ["more than three chunks", { provider: new FakeProvider("four-chunks") }],
+      ["video does not match the clip markers", { provider: new FakeProvider("marker-mismatch") }],
+      ["session not closed right after the clip request", { provider: new FakeProvider("closed-late") }],
     ];
     for (const [name, over] of bad) {
       const w = await world();

@@ -15,13 +15,15 @@
  * generation_started broadcast (the schema delivers it both ways) → pause after the first frame-bearing chunk, so the
  * run stops after exactly two frame-bearing chunks (the first chunk is a
  * zero-frame warm-up per the prompt guide's runtime caveats) → requestClip
- * covering only the frame-bearing chunks → downloadClipAsFile, bounded by a
- * deadline derived from the clip's predictedReadyAtMs → disconnect.
+ * covering only the frame-bearing chunks, exactly once → close the session
+ * (non-recoverable) as soon as the request is acknowledged → one post-close
+ * download, bounded by a deadline derived from the clip's predictedReadyAtMs.
  *
- * Retrieval after the session closes is documented only for ClipPlayer
- * playback, not for downloadClipAsFile, so the download runs while the session
- * is still open and the session closes the moment the download ends or its
- * deadline passes. Nothing is fetched after the session closes.
+ * A recording segment may finish writing only when the session ends (a clip
+ * includes only finished segments, and a paused model advances no timeline),
+ * so the clip is fetched after closing, as ClipPlayer does after a session ends.
+ * This is the owner-approved reading of the docs: download-after-close is not
+ * stated for downloadClipAsFile itself. The clip must match its markers.
  */
 
 export const ORBIS_MODEL = "reactor/visko-orbis-stable";
@@ -32,6 +34,8 @@ export const FRAME_CHUNKS = 2;
 export const CLIP_MARGIN_SECONDS = 0.25;
 export const CLIP_MIN_SECONDS = 3;
 export const CLIP_MAX_SECONDS = 5;
+/** How far the clip's marker span may differ from the generated seconds: one frame at 18 fps, rounded up. */
+export const CLIP_MARKER_TOLERANCE_SECONDS = 0.06;
 /** The SDK's documented grace past predictedReadyAtMs (DEFAULT_PLAYLIST_POLL_SLACK_MS). */
 export const CLIP_READY_SLACK_MS = 15_000;
 /** Time allowed to fetch and remux the segments once the clip is ready. */
@@ -99,6 +103,8 @@ export type SessionReport = {
   clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number; predictedReadyInMs: number | null } | null;
   /** The bounded download: its deadline, how long it waited, and how it ended. */
   download: { deadlineMs: number | null; waitMs: number | null; outcome: "downloaded" | "deadline" | "failed" | "not-attempted" } | null;
+  /** When Reactor acknowledged the single clip request (Unix ms); the session closes right after. */
+  clipRequestAcknowledgedAtEpochMs: number | null;
   /** Seconds of video the model reported generating (frames emitted / fps). */
   generatedSeconds: number;
   timings: { connectStartMs: number; readyMs: number | null; startMs: number | null; pausedMs: number | null; disconnectedMs: number | null; disconnectedEpochMs: number | null };
@@ -130,6 +136,8 @@ export async function runOrbisSession(
   now: () => number,
   onReport?: (live: SessionReport) => void,
   epochNow: () => number = () => Date.now(),
+  /** Post-close download (the SDK's standalone downloadClipAsFile); defaults to the client's own method. */
+  download?: (clip: SdkClip, options: { jwt: string; signal: AbortSignal }) => Promise<Blob>,
 ): Promise<SessionOutcome> {
   const report: SessionReport = {
     sessionId: null,
@@ -143,6 +151,7 @@ export async function runOrbisSession(
     startAcknowledgedBy: null,
     clip: null,
     download: null,
+    clipRequestAcknowledgedAtEpochMs: null,
     generatedSeconds: 0,
     timings: { connectStartMs: now(), readyMs: null, startMs: null, pausedMs: null, disconnectedMs: null, disconnectedEpochMs: null },
   };
@@ -164,6 +173,16 @@ export async function runOrbisSession(
   const conflicts = (b: Record<string, unknown>) => !!acknowledged && (b.image_conditioned !== acknowledged.image_conditioned || b.resolution !== acknowledged.resolution);
   let conditions: Record<string, unknown> | null = null;
   let finished = false;
+  let clipRequested = false;
+  let closed = false;
+  const closeSession = async () => {
+    if (closed) return;
+    closed = true;
+    await reactor.disconnect(false).catch(() => {});
+    report.timings.disconnectedMs = now();
+    report.timings.disconnectedEpochMs = epochNow();
+  };
+  const downloadClip = download ?? ((clip: SdkClip, o: { jwt: string; signal: AbortSignal }) => reactor.downloadClipAsFile(clip, null, o));
 
   /** Resolves when `done()` holds, rejects on any recorded failure or the timeout. */
   const until = (done: () => boolean, ms: number, stage: string, what: string) =>
@@ -336,24 +355,31 @@ export async function runOrbisSession(
     const windowStart = warmups.length > 0 ? warmups[warmups.length - 1].atMs : report.timings.startMs;
     const seconds = Math.round(((now() - windowStart) / 1000 + CLIP_MARGIN_SECONDS) * 1000) / 1000;
     if (!(seconds >= CLIP_MIN_SECONDS && seconds <= CLIP_MAX_SECONDS)) throw new SessionFailure("capture", `The measured frame window (${seconds} s) is outside ${CLIP_MIN_SECONDS}–${CLIP_MAX_SECONDS} s; not capturing.`);
+    // Request the clip exactly once; its identifiers and markers stay in memory only (never reported).
+    if (clipRequested) throw new SessionFailure("capture", "A clip was already requested; never request a second.");
+    clipRequested = true;
+    report.commandsSent.push("requestClip");
     const clip = await bounded(reactor.requestClip(seconds), p.timeouts.clipMs, "capture", "the clip request");
-    if (!clip || clip.sessionId !== report.sessionId || ![clip.startMarker, clip.endMarker, clip.nowMarker].every(Number.isFinite)) throw new SessionFailure("capture", "The clip does not belong to this session or is malformed.");
-    const requestedAtEpoch = epochNow();
+    const generated = generatedSeconds();
+    const problem = clipProblem(clip, report.sessionId, generated);
+    if (problem) throw new SessionFailure("capture", problem);
+    const ackEpoch = epochNow();
     report.clip = {
       kind: String(clip.kind).slice(0, 20),
       startMarker: clip.startMarker,
       endMarker: clip.endMarker,
       nowMarker: clip.nowMarker,
-      predictedReadyInMs: Number.isFinite(clip.predictedReadyAtMs) ? Math.round(clip.predictedReadyAtMs - requestedAtEpoch) : null,
+      predictedReadyInMs: Math.round(clip.predictedReadyAtMs - ackEpoch),
     };
+    report.clipRequestAcknowledgedAtEpochMs = ackEpoch;
     report.download = { deadlineMs: null, waitMs: null, outcome: "not-attempted" };
-    // Confirm generation really stopped: no chunk may arrive for one more chunk's duration.
-    const chunksAtCapture = report.chunks.length;
-    const quietMs = Math.ceil(((started.frames_per_chunk as number) / (started.fps as number)) * 1000) + 300;
-    await new Promise((r) => setTimeout(r, quietMs));
     if (failure) throw failure;
-    if (report.chunks.length !== chunksAtCapture) throw new SessionFailure("pause", "Generation continued after the pause; not downloading.");
-    // Bounded download while the session is still open; aborted at the deadline, never continued after close.
+
+    // Close the paid session as soon as the clip request is acknowledged: nothing is billed while waiting.
+    finished = true;
+    await closeSession();
+
+    // Post-close retrieval, as ClipPlayer does after a session ends: one bounded download, never retried.
     const deadline = clipDownloadDeadlineMs(clip.predictedReadyAtMs, epochNow(), p.clipLimits ?? CLIP_LIMITS);
     if (!deadline.ok) throw new SessionFailure("download", deadline.reason);
     report.download.deadlineMs = deadline.ms;
@@ -361,7 +387,7 @@ export async function runOrbisSession(
     const downloadStart = epochNow();
     let blob: Blob;
     try {
-      blob = await bounded(reactor.downloadClipAsFile(clip, null, { jwt: p.jwt, signal: abort.signal }), deadline.ms, "download", "the clip download");
+      blob = await bounded(downloadClip(clip, { jwt: p.jwt, signal: abort.signal }), deadline.ms, "download", "the clip download");
       report.download.outcome = "downloaded";
     } catch (error) {
       report.download.outcome = (error as Error)?.message?.startsWith("Timed out") ? "deadline" : "failed";
@@ -390,9 +416,24 @@ export async function runOrbisSession(
     return { ...report, ok: false, stage: f.stage, error: f.message };
   } finally {
     finished = true;
-    // Always terminate (non-recoverable): billing stops and nothing can resume it.
-    await reactor.disconnect(false).catch(() => {});
-    report.timings.disconnectedMs = now();
-    report.timings.disconnectedEpochMs = epochNow();
+    // Always terminate (non-recoverable): billing stops and nothing can resume it. Safe to call twice.
+    await closeSession();
   }
+}
+
+/**
+ * Why a clip cannot be trusted, or null. It must belong to this session, carry
+ * the identifiers a post-close download needs, have finite ordered markers, and
+ * span exactly the generated frames (within one frame's tolerance) inside 3–5 s.
+ */
+export function clipProblem(clip: SdkClip | undefined, sessionId: string | null, generatedSeconds: number): string | null {
+  if (!clip || typeof clip !== "object") return "The clip request returned nothing.";
+  if (!sessionId || clip.sessionId !== sessionId) return "The clip does not belong to this session.";
+  if (typeof clip.playlistUrl !== "string" || !/^https:\/\/\S+$/.test(clip.playlistUrl)) return "The clip has no retrievable identifier.";
+  if (![clip.startMarker, clip.endMarker, clip.nowMarker, clip.predictedReadyAtMs].every(Number.isFinite)) return "The clip's markers or expected-ready time are missing.";
+  if (clip.startMarker < 0 || clip.endMarker <= clip.startMarker || clip.endMarker > clip.nowMarker + 1e-6) return "The clip's markers are out of order.";
+  const span = clip.endMarker - clip.startMarker;
+  if (span < CLIP_MIN_SECONDS || span > CLIP_MAX_SECONDS) return `The clip spans ${span.toFixed(3)} s; a preview must be 3–5 s.`;
+  if (Math.abs(span - generatedSeconds) > CLIP_MARKER_TOLERANCE_SECONDS) return `The clip spans ${span.toFixed(3)} s but ${generatedSeconds} s were generated.`;
+  return null;
 }

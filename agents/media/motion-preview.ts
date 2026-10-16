@@ -24,6 +24,8 @@ export const REACTOR_GENERATOR = "reactor";
 export const MOTION_PREVIEW_ORIGIN = "reactor-orbis-motion-preview";
 export const MOTION_PROMPT_FIELD = "prompts.motion.prompt";
 export const IMAGE_PREPROCESSING = "none";
+/** Container duration may round by up to a few frames against the recording markers. */
+export const CLIP_DURATION_TOLERANCE_SECONDS = 0.2;
 
 export type MotionPreviewRequest = {
   planId: string;
@@ -51,6 +53,7 @@ export type MotionPreviewResult = {
   startAcknowledgedBy: string;
   download: { deadlineMs: number; waitMs: number };
   sessionClosedAt: string;
+  clipRequestAcknowledgedAt: string;
   imageAccepted: { width: number; height: number };
   availableResolutions: string[];
   commandsSent: string[];
@@ -80,6 +83,7 @@ export type ProviderRunRecord = {
   clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number; predictedReadyInMs: number | null } | null;
   download: { deadlineMs: number | null; waitMs: number | null; outcome: string } | null;
   sessionClosedAt: string | null;
+  clipRequestAcknowledgedAt: string | null;
 };
 
 /** A provider failure that carries its run record. */
@@ -161,8 +165,12 @@ export type MotionPreviewProvenance = {
     endMarker: number;
     nowMarker: number;
     predictedReadyInMs: number | null;
+    clipRequestAcknowledgedAt: string;
+    sessionClosedBeforeDownload: true;
     downloadDeadlineMs: number;
-    downloadWaitMs: number;
+    /** Time spent retrieving the clip after the session closed (not billed). */
+    postCloseWaitMs: number;
+    postCloseResult: "downloaded";
   };
   startAcknowledgedBy: string;
   sessionClosedAt: string;
@@ -326,7 +334,7 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
     const run: ProviderRunRecord =
       error instanceof ProviderRunError
         ? error.run
-        : { errorCategory: "provider", message, sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null };
+        : { errorCategory: "provider", message, sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null, clipRequestAcknowledgedAt: null };
     const billedSeconds = !run.reachedReady ? 0 : run.readyToCloseSeconds === null ? null : Math.ceil(run.readyToCloseSeconds);
     const report: FailedRunReport = {
       ...run,
@@ -357,6 +365,12 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
   const framesPerChunk = Number(result.generation.frames_per_chunk);
   const fps = Number(result.generation.fps);
   if (frameChunks !== FRAME_CHUNKS || result.chunks.length > MAX_CHUNKS) return stop("response", "The session did not stop after exactly two frame-bearing chunks.");
+  // The decoded video must be the requested recording: its duration matches the clip's marker span.
+  const span = result.clip.endMarker - result.clip.startMarker;
+  if (!(Number.isFinite(span) && Math.abs(checked.metadata.durationSeconds - span) <= CLIP_DURATION_TOLERANCE_SECONDS)) {
+    return stop("response", `The video lasts ${checked.metadata.durationSeconds.toFixed(3)} s but the requested clip spans ${Number.isFinite(span) ? span.toFixed(3) : "?"} s.`);
+  }
+  if (!(Date.parse(result.sessionClosedAt) <= Date.parse(result.clipRequestAcknowledgedAt) + 30_000)) return stop("response", "The session was not closed right after the clip request.");
   if (!(Number.isFinite(result.sessionSeconds) && result.sessionSeconds > 0)) return stop("response", "The session duration was not measured.");
 
   const checksum = `sha256:${sha256Hex(result.video)}`;
@@ -380,8 +394,11 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
       endMarker: result.clip.endMarker,
       nowMarker: result.clip.nowMarker,
       predictedReadyInMs: result.clip.predictedReadyInMs,
+      clipRequestAcknowledgedAt: result.clipRequestAcknowledgedAt,
+      sessionClosedBeforeDownload: true,
       downloadDeadlineMs: result.download.deadlineMs,
-      downloadWaitMs: result.download.waitMs,
+      postCloseWaitMs: result.download.waitMs,
+      postCloseResult: "downloaded",
     },
     startAcknowledgedBy: result.startAcknowledgedBy,
     sessionClosedAt: result.sessionClosedAt,
