@@ -162,6 +162,16 @@ export class SupabaseWorkflowStore implements WorkflowStore {
     return this.one<ApprovalRow>("human_approvals", "review_id", reviewId);
   }
 
+  /** Whether human_approvals has its reasons column (20261017000000_human_approval_reasons.sql). Read-only: selects no rows. */
+  async approvalReasonsAvailable(): Promise<boolean> {
+    try {
+      await this.request("human_approvals", { method: "GET", query: "select=reasons&limit=0" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async insertVisualReview(row: NewVisualReview): Promise<void> {
     await this.insert("media_visual_reviews", row);
   }

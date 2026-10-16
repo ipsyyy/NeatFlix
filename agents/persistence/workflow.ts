@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { HandoffEnvelope, ValidationResult } from "@/agents/handoff/envelope";
 import { NO_GENERATED_PREVIEWS, validateGovernorReview, type GovernorReview, type PreviewRecord, type PreviewRegistry } from "@/agents/handoff/governor-review";
-import { isRecordedApproval, type HumanApproval } from "@/agents/handoff/human-approval";
+import { approvalReasonErrors, isRecordedApproval, type HumanApproval } from "@/agents/handoff/human-approval";
 import { validatePlacementPlan, type PlacementPlan } from "@/agents/handoff/placement-plan";
 import { validateOutgoing } from "@/agents/handoff/protocol";
 import {
@@ -331,12 +331,16 @@ export class WorkflowRegistry {
   }
 
   /**
-   * Persists a human approval. It must be a record created by
-   * recordHumanApproval for the authenticated owner, for a stored and
-   * revalidated approve-for-human-review. A replayed approval is refused.
+   * Persists a human approval with its reasons. It must be a record created by
+   * recordHumanApproval (or recordHumanApprovalOfStoredReview) for the
+   * authenticated owner, for a stored and revalidated approve-for-human-review
+   * whose case is awaiting human review. A replayed approval is refused. The
+   * store moves the case to approved atomically with the insert.
    */
-  async saveHumanApproval(approval: HumanApproval): Promise<Result<{ reviewId: string }>> {
+  async saveHumanApproval(approval: HumanApproval, reasons: readonly string[]): Promise<Result<{ reviewId: string }>> {
     if (!isRecordedApproval(approval)) return fail("Human approval was not recorded by the authenticated human owner.");
+    const reasonErrors = approvalReasonErrors(reasons);
+    if (reasonErrors.length > 0) return fail(...reasonErrors);
     const row = await this.store.getReview(approval.reviewId);
     if (!row) return fail("The approved review is not stored.");
     const preview = await this.loadGeneratedPreview(row.plan_id);
@@ -353,6 +357,7 @@ export class WorkflowRegistry {
     }
     if (!asset || asset.case_id !== row.case_id || asset.plan_id !== row.plan_id) return fail("The approved preview belongs to another case or plan.");
     if (await this.store.getApprovalForReview(row.review_id)) return fail("This review has already been approved; approvals cannot be replayed.");
+    if ((await this.store.getCase(row.case_id))?.status !== "awaiting-human-review") return fail("The case is not awaiting human review.");
     try {
       await this.store.insertApproval({
         approval_id: randomUUID(),
@@ -362,12 +367,13 @@ export class WorkflowRegistry {
         reviewer_user_id: approval.approverUserId,
         reviewer_name: approval.approverName,
         decision: "approve",
+        reasons: [...reasons],
       });
     } catch (error) {
       if (error instanceof DuplicateRecordError) return fail("This review has already been approved; approvals cannot be replayed.");
       throw error;
     }
-    await this.store.setCaseStatus(row.case_id, "approved");
+    if ((await this.store.getCase(row.case_id))?.status !== "approved") return fail("The approval was stored but the case did not move to approved.");
     return { ok: true, value: { reviewId: row.review_id } };
   }
 }

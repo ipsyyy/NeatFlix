@@ -72,6 +72,8 @@ export type ApprovalRow = {
   reviewer_user_id: string;
   reviewer_name: string;
   decision: "approve";
+  /** 1–10 distinct, non-empty reasons of at most 500 characters (20261017000000_human_approval_reasons.sql). */
+  reasons: string[];
   created_at: string;
 };
 

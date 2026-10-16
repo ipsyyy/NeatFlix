@@ -1,5 +1,5 @@
 import type { HandoffEnvelope, ValidationResult } from "./envelope";
-import { NO_GENERATED_PREVIEWS, type GovernorReview, type PreviewRegistry } from "./governor-review";
+import { NO_GENERATED_PREVIEWS, validateGovernorReview, type GovernorReview, type PreviewRegistry } from "./governor-review";
 import { validateOutgoing } from "./protocol";
 
 /**
@@ -62,6 +62,59 @@ export function recordHumanApproval(options: {
   });
   recorded.add(approval);
   return { ok: true, value: approval };
+}
+
+/**
+ * Records a human's approval of a stored, revalidated Release Governor review
+ * (the review row, not its BAND envelope). The same owner-only rules apply as
+ * recordHumanApproval: only the BAND User who owns the NativeFrame agents, and
+ * only for a valid approve-for-human-review with no blockers whose preview the
+ * registry confirms.
+ */
+export function recordHumanApprovalOfStoredReview(options: {
+  sender: ApprovalSender;
+  ownerUserId: string;
+  approverName: string;
+  review: unknown;
+  caseId: string;
+  planId: string;
+  previews: PreviewRegistry;
+  now?: Date;
+}): ValidationResult<HumanApproval> {
+  const { sender } = options;
+  const errors: string[] = [];
+  if (sender.type !== "User" || sender.role !== null) errors.push("Only a human BAND user can approve release.");
+  if (!options.ownerUserId || sender.id !== options.ownerUserId) errors.push("Only the human owner of the NativeFrame agents can approve release.");
+  if (!options.approverName?.trim()) errors.push("Human approval must name the approver.");
+  errors.push(...validateGovernorReview(options.review, { caseId: options.caseId, decision: "approve-for-human-review", artifactId: options.planId }, options.previews));
+  const review = options.review as GovernorReview;
+  if (review?.decision !== "approve-for-human-review" || (review.blockers?.length ?? 1) > 0) errors.push("Only an approve-for-human-review with no blockers can be approved.");
+  if (errors.length > 0) return { ok: false, errors };
+  const approval: HumanApproval = Object.freeze({
+    caseId: options.caseId,
+    artifactId: options.planId,
+    reviewId: review.reviewId,
+    approverUserId: sender.id,
+    approverName: options.approverName.trim(),
+    approvedAt: (options.now ?? new Date()).toISOString(),
+  });
+  recorded.add(approval);
+  return { ok: true, value: approval };
+}
+
+export const MAX_APPROVAL_REASONS = 10;
+export const MAX_APPROVAL_REASON_LENGTH = 500;
+
+/** Why reasons are not valid for an approval: 1–10 distinct strings, non-empty after trimming, at most 500 characters (as the database checks). */
+export function approvalReasonErrors(reasons: unknown): string[] {
+  if (!Array.isArray(reasons) || reasons.length < 1 || reasons.length > MAX_APPROVAL_REASONS) return [`An approval needs 1–${MAX_APPROVAL_REASONS} reasons.`];
+  const errors: string[] = [];
+  reasons.forEach((r, i) => {
+    if (typeof r !== "string" || r.trim().length === 0) errors.push(`Reason ${i + 1} is empty.`);
+    else if (r.length > MAX_APPROVAL_REASON_LENGTH) errors.push(`Reason ${i + 1} is longer than ${MAX_APPROVAL_REASON_LENGTH} characters.`);
+  });
+  if (new Set(reasons).size !== reasons.length) errors.push("Reasons must be distinct.");
+  return errors;
 }
 
 /** A valid Release Governor "approve-for-human-review" with no blockers, under the given preview registry. */

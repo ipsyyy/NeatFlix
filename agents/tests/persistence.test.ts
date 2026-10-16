@@ -10,6 +10,8 @@ import { createWorkflowStoreFromEnv, SupabaseWorkflowStore } from "@/agents/pers
 import { PersistentPreviewRegistry, WorkflowRegistry, type MediaAssetInput } from "@/agents/persistence/workflow";
 import { AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
 import { governorHandoff, PLAN_ID, validGovernorReview, validPlacementPlan } from "./fixtures";
+
+const APPROVAL_REASONS = ["The preview and its checks were reviewed by the owner."];
 import { MemoryWorkflowStore } from "./memory-store";
 
 const CHECKSUM = `sha256:${"a".repeat(64)}`;
@@ -187,7 +189,7 @@ describe("database rows are revalidated, never trusted", () => {
     store.tamper("reviews", reviewId, { review: tampered });
     const approval = recordHumanApproval({ sender: owner, ownerUserId: owner.id, approverName: "Reviewer", governorHandoff: approvalHandoff(), previews });
     assert.ok(approval.ok);
-    const saved = await workflow.saveHumanApproval(approval.ok ? approval.value : (null as never));
+    const saved = await workflow.saveHumanApproval(approval.ok ? approval.value : (null as never), APPROVAL_REASONS);
     assert.ok(!saved.ok && saved.errors.some((e) => /does not revalidate/.test(e)));
   });
 });
@@ -218,11 +220,11 @@ describe("Governor approval against persisted previews", () => {
     const approval = recordHumanApproval({ sender: owner, ownerUserId: owner.id, approverName: "Reviewer", governorHandoff: approvalHandoff(), previews });
     assert.ok(approval.ok);
     const value = approval.ok ? approval.value : (null as never);
-    assert.deepEqual(await workflow.saveHumanApproval(value), { ok: true, value: { reviewId: `review:${PLAN_ID}:r1` } });
+    assert.deepEqual(await workflow.saveHumanApproval(value, APPROVAL_REASONS), { ok: true, value: { reviewId: `review:${PLAN_ID}:r1` } });
     assert.equal((await store.getCase("NF-DEMO-0001"))?.status, "approved");
-    assert.equal((await workflow.saveHumanApproval(value)).ok, false, "approval replay");
+    assert.equal((await workflow.saveHumanApproval(value, APPROVAL_REASONS)).ok, false, "approval replay");
     const forged = { ...value };
-    assert.equal((await workflow.saveHumanApproval(forged)).ok, false, "unrecorded copy");
+    assert.equal((await workflow.saveHumanApproval(forged, APPROVAL_REASONS)).ok, false, "unrecorded copy");
     assert.equal(store.approvals.size, 1);
   });
 
@@ -335,7 +337,7 @@ describe("case isolation (security follow-up)", () => {
     // An approval cannot bind a preview from another case.
     await workflow.saveGovernorReview(approvalHandoff());
     await assert.rejects(
-      store.insertApproval({ approval_id: "a1", case_id: OTHER_CASE, review_id: `review:${PLAN_ID}:r1`, preview_asset_id: "asset:generated-preview:daybreak-v1", reviewer_user_id: owner.id, reviewer_name: "R", decision: "approve" }),
+      store.insertApproval({ reasons: APPROVAL_REASONS, approval_id: "a1", case_id: OTHER_CASE, review_id: `review:${PLAN_ID}:r1`, preview_asset_id: "asset:generated-preview:daybreak-v1", reviewer_user_id: owner.id, reviewer_name: "R", decision: "approve" }),
       IntegrityError,
     );
   });
@@ -348,12 +350,12 @@ describe("case isolation (security follow-up)", () => {
     const value = approval.ok ? approval.value : (null as never);
     // A review row moved to another case is refused, as is a preview moved to another case.
     store.tamper("reviews", `review:${PLAN_ID}:r1`, { case_id: OTHER_CASE });
-    assert.equal((await workflow.saveHumanApproval(value)).ok, false);
+    assert.equal((await workflow.saveHumanApproval(value, APPROVAL_REASONS)).ok, false);
     store.tamper("reviews", `review:${PLAN_ID}:r1`, { case_id: "NF-DEMO-0001" });
     store.tamper("media", "asset:generated-preview:daybreak-v1", { case_id: OTHER_CASE });
-    assert.equal((await workflow.saveHumanApproval(value)).ok, false);
+    assert.equal((await workflow.saveHumanApproval(value, APPROVAL_REASONS)).ok, false);
     store.tamper("media", "asset:generated-preview:daybreak-v1", { case_id: "NF-DEMO-0001" });
-    assert.equal((await workflow.saveHumanApproval(value)).ok, true, "the correctly bound approval still succeeds");
+    assert.equal((await workflow.saveHumanApproval(value, APPROVAL_REASONS)).ok, true, "the correctly bound approval still succeeds");
     assert.equal(store.approvals.size, 1);
   });
 

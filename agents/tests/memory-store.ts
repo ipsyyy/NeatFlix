@@ -1,3 +1,4 @@
+import { approvalReasonErrors } from "@/agents/handoff/human-approval";
 import {
   DuplicateRecordError,
   IntegrityError,
@@ -145,7 +146,12 @@ export class MemoryWorkflowStore implements WorkflowStore {
     if (!review || review.decision !== "approve-for-human-review" || review.case_id !== row.case_id || review.preview_asset_id !== row.preview_asset_id) {
       throw new IntegrityError("human_approvals", "approval does not match an approve-for-human-review");
     }
+    // Mirrors 20261017000000_human_approval_reasons.sql: valid reasons, case awaiting review, and an atomic move to approved.
+    if (approvalReasonErrors(row.reasons).length > 0) throw new IntegrityError("human_approvals", "reasons must be 1–10 distinct non-empty strings of at most 500 characters");
+    const caseRow = this.cases.get(row.case_id);
+    if (caseRow?.status !== "awaiting-human-review") throw new IntegrityError("human_approvals", "the case is not awaiting human review");
     this.approvals.set(row.approval_id, structuredClone({ ...row, created_at: this.now() }));
+    this.cases.set(row.case_id, { ...caseRow, status: "approved", updated_at: this.now() });
   }
 
   async getApprovalForReview(reviewId: string): Promise<ApprovalRow | null> {

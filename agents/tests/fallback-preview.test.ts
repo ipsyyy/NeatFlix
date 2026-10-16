@@ -38,6 +38,9 @@ import { PersistentSourceFrameRegistry } from "@/agents/persistence/source-frame
 import { canonical, PersistentPreviewRegistry } from "@/agents/persistence/workflow";
 import { AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
 import { buildDirectorDelivery, guardedSaveGovernorReview, preflightGovernorDelivery, type DeliveryPin } from "@/agents/runtime/governor-delivery";
+import { checkApprovalReasons, preflightHumanApproval, recordPinnedHumanApproval, type ApprovalPin } from "@/agents/runtime/human-approval-recorder";
+import { AUTHORIZED_REASONS } from "@/agents/runtime/plan-v3-approval";
+import { readFileSync } from "node:fs";
 import { toolsForRole } from "@/agents/tools/evidence-tools";
 import { currentVisualDecision, recordVisualReview } from "@/agents/media/visual-review";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
@@ -634,5 +637,137 @@ describe("plan delivery with a provenance-derived disclosure (local fallback)", 
     await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, { ...env, caseId: "NF-DEMO-PRO-0001" }), "another case");
     await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, "not an envelope"), "malformed");
     assert.ok((await guardedSaveGovernorReview(p.deps, p.pin, env)).ok, "the passing approval still saves afterwards");
+  });
+
+  /** A world whose plan has a guarded approve-for-human-review, so the case awaits human review. */
+  async function awaiting() {
+    const p = await pinned();
+    assert.ok((await guardedSaveGovernorReview(p.deps, p.pin, await approval(p))).ok);
+    const pin: ApprovalPin = {
+      caseId: CASE,
+      planId: p.pin.planId,
+      planSha256: p.pin.planSha256,
+      reviewId: `review:${p.pin.planId}:r1`,
+      previewAssetId: p.id,
+      previewChecksum: p.pin.previewChecksum,
+      visualReviewId: p.pin.visualReviewId,
+    };
+    const owner = { sender: { id: OWNER.id, type: "User", role: null }, ownerUserId: OWNER.id, approverName: "NativeFrame project owner" };
+    return { ...p, approvalPin: pin, owner };
+  }
+  type Awaiting = Awaited<ReturnType<typeof awaiting>>;
+  const record = (a: Awaiting, over: { pin?: Partial<ApprovalPin>; reasons?: readonly unknown[]; sender?: { id: string; type: string; role: string | null }; approverName?: string } = {}) =>
+    recordPinnedHumanApproval(a.deps, { ...a.approvalPin, ...over.pin }, {
+      ...a.owner,
+      ...(over.sender ? { sender: over.sender } : {}),
+      ...(over.approverName !== undefined ? { approverName: over.approverName } : {}),
+      reasons: over.reasons ?? AUTHORIZED_REASONS,
+      expectedReasons: AUTHORIZED_REASONS,
+    });
+  /** Asserts the recorder refused and nothing was written. */
+  async function notApproved(a: Awaiting, result: { ok: boolean }, name: string, status = "awaiting-human-review") {
+    assert.equal(result.ok, false, name);
+    assert.equal(a.store.approvals.size, 0, `${name}: no approval written`);
+    assert.equal((await a.store.getCase(CASE))!.status, status, `${name}: case status unchanged`);
+  }
+
+  it("holds exactly the six authorized reasons, each valid for the database check", () => {
+    assert.equal(AUTHORIZED_REASONS.length, 6);
+    assert.deepEqual(checkApprovalReasons(AUTHORIZED_REASONS, AUTHORIZED_REASONS), []);
+    assert.ok(AUTHORIZED_REASONS.every((r) => r.trim() === r && r.length <= 500));
+    assert.ok(AUTHORIZED_REASONS[4].includes("“not-executed”") && AUTHORIZED_REASONS[3].startsWith("The Release Governor’s "), "typographic characters kept exactly");
+  });
+
+  it("records one approval with exactly the authorized reasons and moves the case to approved", async () => {
+    const a = await awaiting();
+    assert.ok((await preflightHumanApproval(a.deps, a.approvalPin)).ok);
+    const r = await record(a);
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.deepEqual(r.value.approval.reasons, [...AUTHORIZED_REASONS]);
+    assert.deepEqual(
+      [r.value.approval.review_id, r.value.approval.preview_asset_id, r.value.approval.case_id, r.value.approval.reviewer_user_id, r.value.approval.decision, r.value.caseStatus],
+      [a.approvalPin.reviewId, a.id, CASE, OWNER.id, "approve", "approved"],
+    );
+    assert.equal(a.store.approvals.size, 1);
+    // Duplicate: the preflight, the recorder, and the store all refuse a second approval.
+    assert.equal((await preflightHumanApproval(a.deps, a.approvalPin)).ok, false);
+    assert.equal((await record(a)).ok, false, "replay");
+    assert.equal(a.store.approvals.size, 1);
+  });
+
+  it("refuses missing, altered, reordered, empty, oversized, duplicate, extra, or non-string reasons", async () => {
+    const a = await awaiting();
+    const six = [...AUTHORIZED_REASONS];
+    const cases: [string, unknown[]][] = [
+      ["none", []],
+      ["missing one", six.slice(0, 5)],
+      ["altered", [...six.slice(0, 5), six[5].replace("distorted", "fine")]],
+      ["typography normalised", [...six.slice(0, 4), six[4].replace(/[“”]/g, '"'), six[5]]],
+      ["reordered", [six[1], six[0], ...six.slice(2)]],
+      ["empty", [...six.slice(0, 5), "   "]],
+      ["oversized", [...six.slice(0, 5), "x".repeat(501)]],
+      ["duplicate", [...six.slice(0, 5), six[0]]],
+      ["extra", [...six, "Another reason."]],
+      ["non-string", [...six.slice(0, 5), 6]],
+      ["eleven", [...six, "a", "b", "c", "d", "e"]],
+    ];
+    for (const [name, reasons] of cases) await notApproved(a, await record(a, { reasons }), name);
+    assert.ok((await record(a)).ok, "the exact reasons still record afterwards");
+  });
+
+  it("refuses anyone but the human owner", async () => {
+    const a = await awaiting();
+    await notApproved(a, await record(a, { sender: { id: "someone-else", type: "User", role: null } }), "another user");
+    await notApproved(a, await record(a, { sender: { id: OWNER.id, type: "Agent", role: "release-governor" } }), "an agent");
+    await notApproved(a, await record(a, { approverName: "  " }), "unnamed approver");
+  });
+
+  it("refuses a changed plan hash, preview checksum, visual review, preview bytes, review, or case state", async () => {
+    const a = await awaiting();
+    await notApproved(a, await record(a, { pin: { planSha256: "0".repeat(64) } }), "plan hash");
+    await notApproved(a, await record(a, { pin: { previewChecksum: `sha256:${"0".repeat(64)}` } }), "preview checksum");
+    await notApproved(a, await record(a, { pin: { visualReviewId: "another-review" } }), "visual review");
+    await notApproved(a, await record(a, { pin: { reviewId: "review:plan:daybreak-cold-brew:luv-scene-1:v3:r9" } }), "unknown review");
+    a.storage.objects.set(a.req.outputStorageRef, new Uint8Array([5]));
+    await notApproved(a, await record(a), "preview bytes altered");
+    a.storage.objects.set(a.req.outputStorageRef, template.bytes);
+    await a.store.setCaseStatus(CASE, "stopped");
+    await notApproved(a, await record(a), "case stopped", "stopped");
+
+    // A stored review that is not an approval cannot be approved.
+    const b = await pinned();
+    const reviseId = `review:${b.pin.planId}:r1`;
+    await b.store.insertReview({ review_id: reviseId, case_id: CASE, plan_id: b.pin.planId, preview_asset_id: b.id, decision: "revise", review: { kind: "governor-review", reviewId: reviseId, decision: "revise" } });
+    await b.store.setCaseStatus(CASE, "awaiting-human-review");
+    const pin: ApprovalPin = { caseId: CASE, planId: b.pin.planId, planSha256: b.pin.planSha256, reviewId: reviseId, previewAssetId: b.id, previewChecksum: b.pin.previewChecksum, visualReviewId: b.pin.visualReviewId };
+    const r = await recordPinnedHumanApproval(b.deps, pin, { sender: { id: OWNER.id, type: "User", role: null }, ownerUserId: OWNER.id, approverName: "Owner", reasons: AUTHORIZED_REASONS, expectedReasons: AUTHORIZED_REASONS });
+    assert.equal(r.ok, false, "a revise review");
+    assert.equal(b.store.approvals.size, 0);
+  });
+
+  it("enforces reasons and case state at the store, as the migration does", async () => {
+    const a = await awaiting();
+    const row = { approval_id: "a1", case_id: CASE, review_id: a.approvalPin.reviewId, preview_asset_id: a.id, reviewer_user_id: OWNER.id, reviewer_name: "Owner", decision: "approve" as const };
+    await assert.rejects(a.store.insertApproval({ ...row, reasons: [] }), /reasons/);
+    await assert.rejects(a.store.insertApproval({ ...row, reasons: ["Same.", "Same."] }), /reasons/);
+    await a.store.setCaseStatus(CASE, "open");
+    await assert.rejects(a.store.insertApproval({ ...row, reasons: ["Fine."] }), /awaiting human review/);
+    await a.store.setCaseStatus(CASE, "awaiting-human-review");
+    await a.store.insertApproval({ ...row, reasons: ["Fine."] });
+    assert.equal((await a.store.getCase(CASE))!.status, "approved", "the insert moves the case atomically");
+  });
+
+  it("keeps the migration additive: empty-table guard, deny-all, append-only, one approval per review", () => {
+    const sql = readFileSync(join(process.cwd(), "supabase/migrations/20261017000000_human_approval_reasons.sql"), "utf8");
+    assert.match(sql, /if exists \(select 1 from public\.human_approvals\) then\s+raise exception/);
+    assert.match(sql, /add column reasons jsonb not null/);
+    assert.match(sql, /between 1 and 10/);
+    assert.match(sql, /> 500/);
+    assert.match(sql, /count\(distinct e\.value\)/);
+    assert.match(sql, /status is distinct from 'awaiting-human-review'|case_status is distinct from 'awaiting-human-review'/);
+    assert.match(sql, /after insert on public\.human_approvals/);
+    for (const forbidden of [/\bdrop\b/i, /disable row level security/i, /\bgrant\b[^;]*\b(anon|authenticated)\b/i, /update public\.human_approvals/i, /delete from/i, /human_approvals_append_only/]) {
+      assert.ok(!forbidden.test(sql), `the migration never matches ${forbidden}`);
+    }
   });
 });
