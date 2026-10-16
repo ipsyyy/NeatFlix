@@ -25,7 +25,7 @@ import sharp from "sharp";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT } from "@/agents/masky/client";
-import { EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, MAX_SPOKEN_BYTES, validateManifest, type IdentityManifest } from "@/agents/masky/generate";
+import { downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest } from "@/agents/masky/generate";
 import { AGENT_IDENTITIES, estimateSpeechSeconds, portraitSvg, validateIdentities } from "@/agents/masky/identities";
 import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
@@ -37,17 +37,6 @@ const POLL_MS = 5_000;
 
 const renderPng = async (svg: string) => new Uint8Array(await sharp(Buffer.from(svg)).png({ compressionLevel: 9 }).toBuffer());
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-
-/** Downloads provider media once, https only, size-capped. The URL is never printed. */
-async function download(url: string): Promise<{ bytes: Uint8Array; contentType: string }> {
-  if (!url.startsWith("https://")) throw new Error("Provider media must be served over https.");
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`Provider media download failed with HTTP ${res.status}.`);
-  const declared = Number(res.headers.get("content-length") ?? 0);
-  if (declared > MAX_SPOKEN_BYTES) throw new Error("Provider media is too large.");
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  return { bytes, contentType: res.headers.get("content-type") ?? "" };
-}
 
 function readManifest(): IdentityManifest {
   if (!existsSync(MANIFEST_PATH)) return EMPTY_MANIFEST;
@@ -116,7 +105,7 @@ async function main(): Promise<number> {
   if (!masky || !storage) return (out("Masky or Supabase is not configured. Nothing was done."), 1);
 
   const result = await generateIdentities(
-    { masky, storage, renderPng, download, probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
+    { masky, storage, renderPng, download: (url) => downloadProviderMedia(url), probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
     { existing, voiceOverrides },
   );
   if (result.voices) out(`\nVoices: ${AGENT_ROLES.map((r) => `${r}=${result.voices![r].name} (${result.voices![r].id})`).join("; ")}`);

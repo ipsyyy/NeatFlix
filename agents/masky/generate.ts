@@ -267,6 +267,78 @@ export async function generateIdentities(deps: GenerationDeps, options: { existi
   return result(null, voices);
 }
 
+/** Whether an address is loopback, private, link-local, unspecified, or otherwise not a public internet host. */
+export function isNonPublicAddress(address: string): boolean {
+  const a = address.toLowerCase().replace(/^\[|\]$/g, "");
+  const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a)?.[1] ?? a;
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(v4);
+  if (m) {
+    const [x, y] = [Number(m[1]), Number(m[2])];
+    return x === 0 || x === 10 || x === 127 || x >= 224 || (x === 100 && y >= 64 && y <= 127) || (x === 169 && y === 254) || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 198 && (y === 18 || y === 19));
+  }
+  return a === "::" || a === "::1" || /^f[cd]/.test(a) || /^fe[89ab]/.test(a) || a.startsWith("ff");
+}
+
+type Lookup = (host: string) => Promise<{ address: string }[]>;
+const defaultLookup: Lookup = async (host) => (await import("node:dns/promises")).lookup(host, { all: true });
+
+/**
+ * Downloads provider media server-side. Every hop, including each redirect
+ * (at most 3, followed manually), must be https to a public host: names that
+ * resolve to loopback, private, or link-local addresses are refused. The body
+ * is size-capped while streaming. URLs are never logged or returned.
+ */
+export async function downloadProviderMedia(
+  url: string,
+  options: { fetchImpl?: typeof fetch; lookup?: Lookup; maxBytes?: number; maxRedirects?: number } = {},
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const lookup = options.lookup ?? defaultLookup;
+  const maxBytes = options.maxBytes ?? MAX_SPOKEN_BYTES;
+  let current = url;
+  for (let hop = 0; hop <= (options.maxRedirects ?? 3); hop++) {
+    let parsed: URL;
+    try {
+      parsed = new URL(current);
+    } catch {
+      throw new Error("Provider media URL is malformed.");
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error("Provider media must be served over https without credentials.");
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || isNonPublicAddress(host)) throw new Error("Provider media host is not a public host.");
+    const addresses = await lookup(host);
+    if (addresses.length === 0 || addresses.some((r) => isNonPublicAddress(r.address))) throw new Error("Provider media host does not resolve only to public addresses.");
+    const res = await fetchImpl(parsed.href, { redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const next = res.headers.get("location");
+      await res.body?.cancel();
+      if (!next) throw new Error(`Provider media redirect (HTTP ${res.status}) has no location.`);
+      current = new URL(next, parsed).href;
+      continue;
+    }
+    if (!res.ok) throw new Error(`Provider media download failed with HTTP ${res.status}.`);
+    if (Number(res.headers.get("content-length") ?? 0) > maxBytes) throw new Error("Provider media is too large.");
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    const reader = res.body?.getReader();
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > maxBytes) {
+        await reader.cancel();
+        throw new Error("Provider media is too large.");
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const c of chunks) bytes.set(c, (offset += c.length) - c.length);
+    return { bytes, contentType: res.headers.get("content-type") ?? "" };
+  }
+  throw new Error("Provider media redirected too many times.");
+}
+
 /** Server-side probe of downloaded media with local ffprobe (no network). */
 export async function ffprobeMedia(bytes: Uint8Array): Promise<MediaProbe> {
   const dir = await mkdtemp(join(tmpdir(), "nf-masky-"));

@@ -6,10 +6,12 @@ import sharp from "sharp";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import { MaskyClient, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
 import {
+  downloadProviderMedia,
   EMPTY_MANIFEST,
   estimateCredits,
   FALLBACK_DISCLOSURE,
   generateIdentities,
+  isNonPublicAddress,
   presentIdentity,
   resolveVoices,
   validateManifest,
@@ -320,5 +322,47 @@ describe("Masky privacy boundaries", () => {
     for (const file of files(bundle).filter((f) => f.endsWith(".js"))) {
       assert.ok(!/masky\.ai|MASKY_API_KEY|mky_/.test(readFileSync(file, "utf8")), `${file} must not contain Masky code`);
     }
+  });
+
+  it("downloads provider media only over https to public hosts, re-checking every redirect hop", async () => {
+    const publicDns = async () => [{ address: "93.184.216.34" }];
+    const calls: { url: string; redirect: string | undefined }[] = [];
+    const routes: Record<string, Response | (() => Response)> = {};
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, redirect: init.redirect });
+      const r = routes[url];
+      return typeof r === "function" ? r() : r;
+    }) as unknown as typeof fetch;
+    const redirect = (to: string) => () => new Response(null, { status: 302, headers: { location: to } });
+    routes["https://cdn.example.com/a.mp3"] = () => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+    routes["https://cdn.example.com/hop"] = redirect("https://cdn.example.com/a.mp3");
+    routes["https://cdn.example.com/to-http"] = redirect("http://cdn.example.com/a.mp3");
+    routes["https://cdn.example.com/to-metadata"] = redirect("https://169.254.169.254/latest/meta-data");
+    routes["https://cdn.example.com/loop"] = redirect("https://cdn.example.com/loop");
+    routes["https://cdn.example.com/huge"] = () => new Response(new Uint8Array(64), { status: 200, headers: { "content-type": "audio/mpeg" } });
+
+    const ok = await downloadProviderMedia("https://cdn.example.com/hop", { fetchImpl, lookup: publicDns });
+    assert.deepEqual([...ok.bytes], [1, 2, 3]);
+    assert.ok(calls.every((c) => c.redirect === "manual"), "redirects are never followed automatically");
+
+    const refused: [string, Parameters<typeof downloadProviderMedia>[1]?][] = [
+      ["http://cdn.example.com/a.mp3"],
+      ["https://cdn.example.com/to-http"],
+      ["https://cdn.example.com/to-metadata"],
+      ["https://user:pw@cdn.example.com/a.mp3"],
+      ["https://localhost/a.mp3"],
+      ["https://10.0.0.5/a.mp3"],
+      ["https://cdn.example.com/a.mp3", { lookup: async () => [{ address: "127.0.0.1" }] }],
+      ["https://cdn.example.com/a.mp3", { lookup: async () => [{ address: "93.184.216.34" }, { address: "fd00::1" }] }],
+      ["https://cdn.example.com/loop"],
+      ["https://cdn.example.com/huge", { maxBytes: 10 }],
+    ];
+    for (const [url, opts] of refused) {
+      const before = calls.length;
+      await assert.rejects(downloadProviderMedia(url, { fetchImpl, lookup: publicDns, ...opts }), Error, url);
+      if (/\/\/(localhost|10\.|user:)|^http:/.test(url)) assert.equal(calls.length, before, `${url}: refused before any request`);
+    }
+    assert.deepEqual(["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fe80::1", "fd12::1", "::ffff:10.0.0.1"].filter((a) => !isNonPublicAddress(a)), []);
+    assert.deepEqual(["93.184.216.34", "8.8.8.8", "2606:4700::1111"].filter(isNonPublicAddress), []);
   });
 });
