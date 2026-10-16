@@ -1,5 +1,5 @@
 import type { AgentRole } from "@/agents/config/roles";
-import type { HandoffEnvelope } from "./envelope";
+import type { HandoffEnvelope, ValidationRegistries } from "./envelope";
 import { NO_PREVIEW_DISCLOSURE, visualClaims } from "./governor-review";
 import { generationClaims, misleadingFrameTerms, STAND_IN_DISCLOSURE } from "./placement-plan";
 import { SOURCE_FRAME_DISCLOSURE } from "./source-frames";
@@ -56,7 +56,7 @@ const ROOM_HISTORY_REFERENCE =
  * the handoff block; omit it to check only the envelope (e.g. a draft).
  * Returns problems to fix, or an empty list.
  */
-export function validateResult(envelope: HandoffEnvelope, readable?: string): string[] {
+export function validateResult(envelope: HandoffEnvelope, readable?: string, registries: Pick<ValidationRegistries, "disclosures"> = {}): string[] {
   const errors: string[] = [];
   const approved = APPROVED_EVIDENCE_SOURCES[envelope.senderRole];
 
@@ -106,16 +106,24 @@ export function validateResult(envelope: HandoffEnvelope, readable?: string): st
   }
 
   if (envelope.senderRole === "placement-director") {
-    const text = [readable ?? "", envelope.nextAction, ...envelope.assumptions, ...envelope.evidence.map((x) => x.claim)].join("\n");
+    // A plan bound to a registered source frame states that; a stand-in plan states the stand-in. When the
+    // frame has derived media, its provenance-derived disclosure replaces the historical frame sentence.
+    const plan = envelope.artifact?.kind === "placement-plan" ? envelope.artifact : null;
+    const usesFrame = plan?.sourceMedia.kind === "registered-source-frame";
+    const state = plan && usesFrame ? (registries.disclosures?.find(plan.planId) ?? null) : null;
+    if (state?.status === "invalid") errors.push("The plan's derived media provenance does not validate, so no visual disclosure can be made.");
+    const derived = state?.status === "derived" ? state.disclosure : null;
+    const disclosure = derived ?? (usesFrame ? SOURCE_FRAME_DISCLOSURE : STAND_IN_DISCLOSURE);
+    if (readable !== undefined && envelope.artifact && !readable.includes(disclosure)) {
+      errors.push(`The readable result must contain exactly: "${disclosure}"`);
+    }
+    if (derived && readable?.includes(SOURCE_FRAME_DISCLOSURE)) errors.push("The frame has derived media; do not state that no edit or generation has been run on it.");
+    // Only the exact, provenance-derived disclosure may describe generation that happened.
+    const raw = [readable ?? "", envelope.nextAction, ...envelope.assumptions, ...envelope.evidence.map((x) => x.claim)].join("\n");
+    const text = derived ? raw.split(derived).join("\n") : raw;
     for (const s of generationClaims(text)) errors.push(`No generation has run; remove the claim: "${s.slice(0, 120)}"`);
     if (readable !== undefined && envelope.artifact && !/\bnot (yet )?(been )?executed\b/i.test(readable)) {
       errors.push("The readable result must state that the generation prompts have not been executed.");
-    }
-    // A plan bound to a registered source frame states that; a stand-in plan states the stand-in.
-    const usesFrame = envelope.artifact?.kind === "placement-plan" && envelope.artifact.sourceMedia.kind === "registered-source-frame";
-    const disclosure = usesFrame ? SOURCE_FRAME_DISCLOSURE : STAND_IN_DISCLOSURE;
-    if (readable !== undefined && envelope.artifact && !readable.includes(disclosure)) {
-      errors.push(`The readable result must contain exactly: "${disclosure}"`);
     }
     if (!usesFrame) {
       for (const term of misleadingFrameTerms(text)) {

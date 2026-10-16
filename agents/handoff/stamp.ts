@@ -1,6 +1,6 @@
 import type { HandoffEnvelope, ValidationRegistries, ValidationResult } from "./envelope";
 import type { PreviewRegistry } from "./governor-review";
-import type { SourceFrameRegistry } from "./source-frames";
+import type { SourceFrameRegistry, VisualDisclosureRegistry } from "./source-frames";
 import { validateResult } from "./output-rules";
 import { HANDOFF_FENCE, formatHandoffBlock, validateOutgoing } from "./protocol";
 import { runtimeTimestamp } from "./timestamps";
@@ -58,14 +58,21 @@ export function stampOutgoingContent(content: string, now: Date = new Date(), op
  * Validates a model-drafted envelope the way the send boundary will: any
  * timestamp in the draft is ignored and replaced by the runtime.
  */
-export function validateDraft(draft: unknown, now: Date = new Date(), readable?: string, previews?: PreviewRegistry, frames?: SourceFrameRegistry) {
+export function validateDraft(
+  draft: unknown,
+  now: Date = new Date(),
+  readable?: string,
+  previews?: PreviewRegistry,
+  frames?: SourceFrameRegistry,
+  disclosures?: VisualDisclosureRegistry,
+) {
   if (typeof draft !== "object" || draft === null || Array.isArray(draft)) {
     return validateOutgoing(draft);
   }
   const envelope: Record<string, unknown> = { ...(draft as Record<string, unknown>) };
   delete envelope.timestamp;
   envelope.timestamp = runtimeTimestamp(now);
-  return checkEnvelope(envelope, readable, { previews, frames });
+  return checkEnvelope(envelope, readable, { previews, frames, disclosures });
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -79,12 +86,12 @@ const isEvidenceList = (v: unknown) =>
  */
 function checkEnvelope(envelope: Record<string, unknown>, readable?: string, registries: ValidationRegistries = {}): ValidationResult<HandoffEnvelope> {
   const result = validateOutgoing(envelope, registries);
-  const errors = result.ok ? validateResult(result.value, readable) : [...result.errors, ...ruleErrorsForInvalid(envelope, readable)];
+  const errors = result.ok ? validateResult(result.value, readable, registries) : [...result.errors, ...ruleErrorsForInvalid(envelope, readable, registries)];
   return errors.length > 0 ? { ok: false, errors: [...new Set(errors)] } : result;
 }
 
 /** Output rules for an envelope that failed validation, run when the fields they read are well formed. */
-function ruleErrorsForInvalid(envelope: Record<string, unknown>, readable?: string): string[] {
+function ruleErrorsForInvalid(envelope: Record<string, unknown>, readable?: string, registries: ValidationRegistries = {}): string[] {
   const { senderRole, evidence, assumptions, nextAction, artifact } = envelope;
   if (typeof senderRole !== "string" || !isEvidenceList(evidence)) return [];
   if (!Array.isArray(assumptions) || !assumptions.every((a) => typeof a === "string")) return [];
@@ -95,5 +102,6 @@ function ruleErrorsForInvalid(envelope: Record<string, unknown>, readable?: stri
       artifact: isObj(artifact) && isEvidenceList(artifact.evidence) ? artifact : undefined,
     } as unknown as HandoffEnvelope,
     readable,
+    registries,
   );
 }

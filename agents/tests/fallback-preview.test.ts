@@ -29,7 +29,16 @@ import type { ImageEditProvider } from "@/agents/media/gemini-provider";
 import { executeMotionPreview, type AttemptLedger, type MotionPreviewProvider } from "@/agents/media/motion-preview";
 import { buildLuvRebrandPlanV3, buildRevisedPlan, LUV_PLAN_V2 } from "@/agents/media/plan-revisions";
 import { executeStillEdit } from "@/agents/media/still-edit";
+import { RELEASE_GOVERNOR_DISCLOSURE, validateResult } from "@/agents/handoff/output-rules";
+import { extractHandoffs } from "@/agents/handoff/protocol";
+import { stampOutgoingContent } from "@/agents/handoff/stamp";
+import { deriveVisualDisclosure, staticDisclosureRegistry } from "@/agents/media/derived-disclosure";
 import { evaluatePreviewEvidence } from "@/agents/media/preview-evidence";
+import { PersistentSourceFrameRegistry } from "@/agents/persistence/source-frames";
+import { canonical, PersistentPreviewRegistry } from "@/agents/persistence/workflow";
+import { AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
+import { buildDirectorDelivery, guardedSaveGovernorReview, preflightGovernorDelivery, type DeliveryPin } from "@/agents/runtime/governor-delivery";
+import { toolsForRole } from "@/agents/tools/evidence-tools";
 import { currentVisualDecision, recordVisualReview } from "@/agents/media/visual-review";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
@@ -396,5 +405,234 @@ describe("fallback preview: deterministic generation (local FFmpeg)", { skip: ha
     assert.equal(await w.store.getVisualReview(id), null, "no review was recorded");
     w.storage.objects.set(w.req.outputStorageRef, created!.bytes);
     assert.ok((await reviewOf()).ok, "the restored, untampered fallback is reviewable");
+  });
+});
+
+/** The disclosure the human owner specified for plan v3, which the provenance must reproduce exactly. */
+const V3_DISCLOSURE =
+  "The current visual is derived from the registered LUV source frame. Gemini edited only the two existing cup surfaces to apply Daybreak Cold Brew branding, and the approved local FFmpeg fallback generated a deterministic motion preview. No new cup or product object was inserted.";
+
+describe("plan delivery with a provenance-derived disclosure (local fallback)", { skip: hasFfmpeg ? false : "ffmpeg is not installed" }, () => {
+  /** One real render, registered byte-identically in each world under that world's own still review. */
+  let template: { row: Awaited<ReturnType<MemoryWorkflowStore["getMediaAsset"]>> & object; bytes: Uint8Array };
+  before(async () => {
+    sourceImage = await textured(1376, 768);
+    const w = await world();
+    const r = await executeFallbackPreview(w.req, w);
+    assert.ok(r.ok, JSON.stringify(r));
+    template = { row: (await w.store.getMediaAsset(w.req.outputAssetId))!, bytes: w.storage.objects.get(w.req.outputStorageRef)! };
+  });
+
+  async function pinned(options: { stillReview?: "approved" | "rejected"; previewReview?: "approved" | "rejected" | null } = {}) {
+    const w = await world({ review: options.stillReview ?? "approved" });
+    const { created_at: _created, ...row } = structuredClone(template.row);
+    void _created;
+    const p = row.provenance as FallbackProvenance;
+    await w.store.insertMediaAsset({ ...row, provenance: { ...p, visualReview: { ...p.visualReview, reviewId: w.req.visualReviewId } } });
+    w.storage.objects.set(w.req.outputStorageRef, template.bytes);
+    const id = w.req.outputAssetId;
+    const previewReview = options.previewReview === undefined ? "approved" : options.previewReview;
+    if (previewReview) assert.ok((await recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: previewReview, reasons: ["Owner decision."], reviewer: OWNER, ownerUserId: OWNER.id })).ok);
+    const stored = await w.workflow.loadPlan(w.v3.planId);
+    assert.ok(stored.ok);
+    const pin: DeliveryPin = {
+      caseId: CASE,
+      planId: w.v3.planId,
+      planSha256: sha256Hex(canonical(stored.value)),
+      previewAssetId: id,
+      previewChecksum: template.row.checksum,
+      visualReviewId: (await w.store.getVisualReview(id))?.review_id ?? "none",
+    };
+    const evidence = (planId: string) => evaluatePreviewEvidence({ workflow: w.workflow, store: w.store, storage: w.storage }, planId);
+    const deps = { workflow: w.workflow, store: w.store, evidence };
+    const frames = new PersistentSourceFrameRegistry(w.workflow);
+    await frames.refreshScene(CASE, "luv-scene-1");
+    return { ...w, id, pin, deps, frames, plan: stored.value };
+  }
+  type Pinned = Awaited<ReturnType<typeof pinned>>;
+
+  /** An approve-for-human-review that copies the Governor's tool results verbatim. */
+  async function approval(p: Pinned, over: Record<string, unknown> = {}) {
+    const previews = new PersistentPreviewRegistry(p.workflow);
+    await previews.refresh(p.pin.planId);
+    const tools = toolsForRole("release-governor", { plans: new AcceptedPlanRegistry(p.workflow), previews, frames: p.frames, previewEvidence: p.deps.evidence });
+    const check = (await tools[0].handler({ planId: p.pin.planId })) as { checks: { id: string; category: string; outcome: string; detail: string }[] };
+    const status = (await tools[1].handler({ planId: p.pin.planId })) as Record<string, unknown>;
+    const review = {
+      kind: "governor-review", version: 1, reviewId: `review:${p.pin.planId}:r1`, caseId: CASE,
+      subject: { titleId: "luv-hypothesis", sceneId: "luv-scene-1", campaignId: "daybreak-cold-brew", planId: p.pin.planId },
+      decision: "approve-for-human-review",
+      hhh: { helpful: { outcome: "pass", rationale: "Actionable." }, honest: { outcome: "pass", rationale: "Cites tools." }, harmless: { outcome: "pass", rationale: "No veto." } },
+      checks: check.checks.map((c) => ({ ...c, source: `nativeframe_check_placement_plan.checks[${c.id}]` })),
+      evidence: [{ claim: "A preview is registered.", source: "nativeframe_get_preview_status" }],
+      blockers: [], corrections: [], assumptions: ["Demo fixtures."], uncertainty: "Human approval is still required.",
+      preview: { status: "provided", assetRef: status.assetRef, provenance: status.provenance, generationMetadata: status.generationMetadata },
+      humanApproval: { status: "pending" },
+      ...over,
+    };
+    return {
+      caseId: CASE, artifactId: p.pin.planId, senderRole: "release-governor", recipientRole: "human-reviewer", decision: review.decision,
+      evidence: review.evidence, confidence: 0.8, assumptions: [], blockers: [], nextAction: "Human owner decides.", timestamp: new Date().toISOString(), artifact: review,
+    };
+  }
+
+  /** Asserts the guard refused and nothing was written. */
+  async function refused(p: Pinned, result: { ok: boolean }, name: string, status = "open") {
+    assert.equal(result.ok, false, name);
+    assert.equal(p.store.reviews.size, 0, `${name}: no review written`);
+    assert.equal((await p.store.getCase(CASE))!.status, status, `${name}: case status unchanged`);
+  }
+
+  it("derives exactly the specified v3 disclosure from registered provenance", async () => {
+    const p = await pinned();
+    const state = await deriveVisualDisclosure(p.deps, p.pin.planId);
+    assert.ok(state.status === "derived", JSON.stringify(state));
+    assert.equal(state.disclosure, V3_DISCLOSURE);
+    assert.deepEqual(
+      [state.facts.sourceFrameAssetId, state.facts.editedStill.assetId, state.facts.editedStill.visualReviewId, state.facts.preview.assetId, state.facts.preview.checksum, state.facts.cups, state.facts.brand],
+      ["asset:luv-hypothesis:source-frame:luv-scene-1:v1", STILL.id, p.req.visualReviewId, p.id, template.row.checksum, 2, "Daybreak Cold Brew"],
+    );
+    assert.deepEqual(await deriveVisualDisclosure(p.deps, "plan:daybreak-cold-brew:luv-scene-1:v1"), { status: "unedited" }, "a plan with no derived media keeps the historical disclosure");
+  });
+
+  it("derives nothing when any provenance element is absent, mismatched, or unsupported", async () => {
+    const invalid = async (p: Pinned, name: string) => assert.equal((await deriveVisualDisclosure(p.deps, p.pin.planId)).status, "invalid", name);
+    await invalid(await pinned({ previewReview: null }), "preview review missing");
+    await invalid(await pinned({ previewReview: "rejected" }), "preview review rejected");
+    await invalid(await pinned({ stillReview: "rejected", previewReview: null }), "edited-still review rejected");
+
+    const p = await pinned({ previewReview: null });
+    const row = (await p.store.getMediaAsset(p.id))!;
+    const prov = row.provenance as FallbackProvenance;
+    assert.ok((await recordVisualReview({ workflow: p.workflow, store: p.store, storage: p.storage, assetId: p.id, decision: "approved", reasons: [], reviewer: OWNER, ownerUserId: OWNER.id })).ok);
+    await invalid({ ...p, deps: { ...p.deps, evidence: undefined as never } }, "no evidence source");
+    p.storage.objects.set(p.req.outputStorageRef, new Uint8Array([3]));
+    await invalid(p, "preview bytes differ");
+    p.storage.objects.set(p.req.outputStorageRef, template.bytes);
+    assert.equal((await deriveVisualDisclosure(p.deps, p.pin.planId)).status, "derived", "restored");
+
+    const q = await pinned({ previewReview: null });
+    await q.store.updateMediaAsset(q.id, { provenance: { ...prov, visualReview: { ...prov.visualReview, reviewId: q.req.visualReviewId }, sourceEditedStill: { ...prov.sourceEditedStill, checksum: `sha256:${"0".repeat(64)}` } } });
+    await invalid(q, "preview names other still bytes");
+    const stillRow = (await q.store.getMediaAsset(STILL.id))!;
+    q.store.media.set(STILL.id, { ...stillRow, generator: "another-editor" });
+    await invalid(q, "unsupported editor");
+
+    const r = await pinned();
+    const planRow = r.store.plans.get(r.pin.planId)!;
+    const plan = planRow.plan as { rebrand: Record<string, unknown> };
+    r.store.plans.set(r.pin.planId, { ...planRow, plan: { ...plan, rebrand: { ...plan.rebrand, addedObjects: 1, cupsAfter: 3 } } });
+    await invalid(r, "plan adds an object");
+
+    const t = await pinned();
+    await t.store.insertMediaAsset({ ...(await t.store.getMediaAsset(STILL.id))!, asset_id: `${STILL.id}-copy`, storage_ref: `${STILL.ref}.copy` });
+    await invalid(t, "two edited stills");
+  });
+
+  it("requires the exact derived wording, never the historical sentence, and keeps the historical path unchanged", async () => {
+    const p = await pinned();
+    const pre = await preflightGovernorDelivery(p.deps, p.pin);
+    assert.ok(pre.ok, JSON.stringify(pre));
+    assert.equal(pre.value.disclosure, V3_DISCLOSURE);
+    const draft = buildDirectorDelivery(pre.value.plan, { governorMention: "@release-governor", frames: p.frames, disclosure: pre.value.disclosure });
+    assert.ok(draft.ok, JSON.stringify(draft));
+    const readableText = draft.value.draftContent.slice(0, draft.value.draftContent.indexOf("```"));
+    assert.ok(readableText.includes(V3_DISCLOSURE) && !readableText.includes(SOURCE_FRAME_DISCLOSURE), "the readable result states only the derived disclosure");
+    const stamped = stampOutgoingContent(draft.value.draftContent, new Date(), draft.value.registries);
+    assert.ok(stamped.ok, JSON.stringify(stamped));
+    const [block] = extractHandoffs(stamped.content);
+    assert.ok(block.ok);
+    const envelope = block.value as Parameters<typeof validateResult>[0];
+    const derived = { disclosures: staticDisclosureRegistry(p.pin.planId, { status: "derived", disclosure: V3_DISCLOSURE }) };
+    const base = `Plan unchanged. The plan record labels both generation prompts as not executed. ${RELEASE_GOVERNOR_DISCLOSURE}`;
+    assert.deepEqual(validateResult(envelope, `${base} ${V3_DISCLOSURE}`, derived), []);
+    const errors = (readable: string, registries: Parameters<typeof validateResult>[2] = derived) => validateResult(envelope, readable, registries);
+    assert.ok(errors(`${base} ${V3_DISCLOSURE.replace("two", "three")}`).some((e) => /must contain exactly/.test(e)), "altered wording");
+    assert.ok(errors(`${base} ${SOURCE_FRAME_DISCLOSURE}`).length > 0, "the historical sentence alone");
+    assert.ok(errors(`${base} ${V3_DISCLOSURE} ${SOURCE_FRAME_DISCLOSURE}`).some((e) => /do not state that no edit/.test(e)), "both sentences");
+    assert.ok(errors(`${base} ${V3_DISCLOSURE} Reactor generated the preview.`).some((e) => /No generation has run/.test(e)), "a generation claim outside the derived sentence");
+    const invalidState = { disclosures: staticDisclosureRegistry(p.pin.planId, { status: "invalid", errors: ["x"] }) };
+    assert.ok(errors(`${base} ${SOURCE_FRAME_DISCLOSURE}`, invalidState).some((e) => /does not validate/.test(e)), "invalid provenance fails closed");
+    // Historical path: no registry, or an unedited plan, still requires the original sentence and refuses generation claims.
+    const unedited = { disclosures: staticDisclosureRegistry(p.pin.planId, { status: "unedited" }) };
+    for (const registries of [{}, unedited]) {
+      assert.deepEqual(errors(`${base} ${SOURCE_FRAME_DISCLOSURE}`, registries), []);
+      assert.ok(errors(`${base} ${V3_DISCLOSURE}`, registries).some((e) => /must contain exactly/.test(e) || /No generation has run/.test(e)));
+    }
+    assert.equal(buildDirectorDelivery(pre.value.plan, { governorMention: "@g", frames: p.frames, disclosure: SOURCE_FRAME_DISCLOSURE }).ok, false, "the builder refuses the historical sentence");
+  });
+
+  it("delivers the stored plan byte-identically and saves one approval only through the guard", async () => {
+    const p = await pinned();
+    const pre = await preflightGovernorDelivery(p.deps, p.pin);
+    assert.ok(pre.ok, JSON.stringify(pre));
+    const draft = buildDirectorDelivery(pre.value.plan, { governorMention: "@release-governor", frames: p.frames, disclosure: pre.value.disclosure });
+    assert.ok(draft.ok, JSON.stringify(draft));
+    const stamped = stampOutgoingContent(draft.value.draftContent, new Date(), draft.value.registries);
+    assert.ok(stamped.ok, JSON.stringify(stamped));
+    const [block] = extractHandoffs(stamped.content);
+    assert.ok(block.ok);
+    const carried = (block.value as { artifact: unknown }).artifact;
+    assert.equal(canonical(carried), canonical(p.plan), "the delivered plan is byte-identical to the stored plan");
+    const plansBefore = structuredClone([...p.store.plans.values()]);
+    assert.deepEqual(await new AcceptedPlanRegistry(p.workflow).record(carried as typeof p.plan), [], "the gate accepts it");
+    assert.deepEqual([...p.store.plans.values()], plansBefore, "the gate's re-save writes nothing");
+
+    const saved = await guardedSaveGovernorReview(p.deps, p.pin, await approval(p));
+    assert.ok(saved.ok, JSON.stringify(saved));
+    const row = (await p.store.getReview(`review:${p.pin.planId}:r1`))!;
+    assert.deepEqual([row.decision, row.preview_asset_id, row.plan_id], ["approve-for-human-review", p.id, p.pin.planId]);
+    assert.equal((await p.store.getCase(CASE))!.status, "awaiting-human-review");
+    assert.equal(p.store.approvals.size, 0, "no human approval");
+
+    const again = await preflightGovernorDelivery(p.deps, p.pin);
+    assert.equal(again.ok, false, "duplicate delivery");
+    assert.ok((again as { errors: string[] }).errors.some((e) => /already has a Governor review/.test(e)) && (again as { errors: string[] }).errors.some((e) => /not "open"/.test(e)));
+    assert.equal((await guardedSaveGovernorReview(p.deps, p.pin, await approval(p, { reviewId: `review:${p.pin.planId}:r2` }))).ok, false);
+    assert.equal(p.store.reviews.size, 1);
+  });
+
+  it("refuses an altered plan or hash, a changed case, an existing review, or a changed preview", async () => {
+    const p = await pinned();
+    await refused(p, await guardedSaveGovernorReview(p.deps, { ...p.pin, planSha256: "0".repeat(64) }, await approval(p)), "wrong pinned hash");
+    await refused(p, await guardedSaveGovernorReview(p.deps, { ...p.pin, previewChecksum: `sha256:${"0".repeat(64)}` }, await approval(p)), "pinned checksum differs");
+    const env = await approval(p);
+    p.storage.objects.set(p.req.outputStorageRef, new Uint8Array([1]));
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, env), "bytes altered after the Governor's turn");
+    p.storage.objects.set(p.req.outputStorageRef, template.bytes);
+    const planRow = p.store.plans.get(p.pin.planId)!;
+    p.store.plans.set(p.pin.planId, { ...planRow, plan: { ...(planRow.plan as object), assumptions: ["Altered."] } });
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, env), "altered stored plan");
+    p.store.plans.set(p.pin.planId, planRow);
+    await p.store.setCaseStatus(CASE, "stopped");
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, env), "case stopped", "stopped");
+
+    const q = await pinned();
+    await q.store.insertReview({ review_id: "review:earlier:r1", case_id: CASE, plan_id: q.pin.planId, preview_asset_id: null, decision: "revise", review: {} });
+    assert.equal((await preflightGovernorDelivery(q.deps, q.pin)).ok, false);
+    assert.equal((await guardedSaveGovernorReview(q.deps, q.pin, await approval(q))).ok, false);
+    assert.equal(q.store.reviews.size, 1, "only the earlier review");
+  });
+
+  it("refuses a missing or rejected visual review, non-passing evidence, or any non-approval result", async () => {
+    for (const previewReview of [null, "rejected"] as const) {
+      const p = await pinned({ previewReview });
+      assert.equal((await preflightGovernorDelivery(p.deps, p.pin)).ok, false, String(previewReview));
+    }
+    const p = await pinned();
+    const env = await approval(p);
+    for (const outcome of ["fail", "not-evaluated"] as const) {
+      const deps = { ...p.deps, evidence: async () => ({ outcome, detail: "Stub.", assetId: p.id, checksum: p.pin.previewChecksum, visualReviewId: p.pin.visualReviewId }) };
+      await refused(p, await guardedSaveGovernorReview(deps, p.pin, env), `evidence ${outcome} at save time`);
+    }
+    await refused(p, await guardedSaveGovernorReview(p.deps, { ...p.pin, visualReviewId: "another-review" }, env), "a different approved review");
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, { ...env, decision: "revise", recipientRole: "placement-director", artifact: { ...env.artifact, decision: "revise" } }), "revise");
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, { ...env, decision: "stop", artifact: { ...env.artifact, decision: "stop" } }), "stop");
+    const notEvaluated = await approval(p, { checks: env.artifact.checks.map((c) => (c.id === "preview-visual-quality" ? { ...c, outcome: "not-evaluated" } : c)) });
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, notEvaluated), "technical check not passing");
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, await approval(p, { preview: { ...env.artifact.preview, assetRef: "storage://nf-media/other.mp4" } })), "names another preview");
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, { ...env, caseId: "NF-DEMO-PRO-0001" }), "another case");
+    await refused(p, await guardedSaveGovernorReview(p.deps, p.pin, "not an envelope"), "malformed");
+    assert.ok((await guardedSaveGovernorReview(p.deps, p.pin, env)).ok, "the passing approval still saves afterwards");
   });
 });

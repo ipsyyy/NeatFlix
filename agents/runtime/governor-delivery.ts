@@ -2,7 +2,8 @@ import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import { RELEASE_GOVERNOR_DISCLOSURE } from "@/agents/handoff/output-rules";
 import type { PlacementPlan } from "@/agents/handoff/placement-plan";
 import { HANDOFF_FENCE } from "@/agents/handoff/protocol";
-import { SOURCE_FRAME_DISCLOSURE, type SourceFrameRegistry } from "@/agents/handoff/source-frames";
+import { SOURCE_FRAME_DISCLOSURE, type SourceFrameRegistry, type VisualDisclosureRegistry } from "@/agents/handoff/source-frames";
+import { deriveVisualDisclosure, staticDisclosureRegistry } from "@/agents/media/derived-disclosure";
 import { validateDraft } from "@/agents/handoff/stamp";
 import { sha256Hex } from "@/agents/media/edited-still";
 import type { PreviewEvidence, PreviewEvidenceSource } from "@/agents/media/preview-evidence";
@@ -36,7 +37,7 @@ type Result<T> = { ok: true; value: T } | { ok: false; errors: string[] };
 export async function preflightGovernorDelivery(
   deps: DeliveryDeps,
   pin: DeliveryPin,
-): Promise<Result<{ plan: PlacementPlan; planSha256: string; evidence: PreviewEvidence }>> {
+): Promise<Result<{ plan: PlacementPlan; planSha256: string; evidence: PreviewEvidence; disclosure: string }>> {
   const plan = await deps.workflow.loadPlan(pin.planId);
   if (!plan.ok) return { ok: false, errors: [`Plan ${pin.planId} does not revalidate.`, ...plan.errors] };
   const errors: string[] = [];
@@ -51,7 +52,15 @@ export async function preflightGovernorDelivery(
   else if (evidence.assetId !== pin.previewAssetId || evidence.checksum !== pin.previewChecksum || evidence.visualReviewId !== pin.visualReviewId) {
     errors.push(`Preview evidence passes for ${evidence.assetId} (${evidence.checksum}, review ${evidence.visualReviewId}), not the pinned asset, checksum, and review.`);
   }
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, value: { plan: plan.value, planSha256, evidence } };
+  // The visual disclosure must be derived from registered provenance; the historical frame sentence is false here.
+  const disclosure = await deriveVisualDisclosure(deps, pin.planId);
+  if (disclosure.status === "invalid") errors.push("The visual disclosure cannot be derived from registered provenance.", ...disclosure.errors);
+  else if (disclosure.status !== "derived") errors.push("The plan has no derived media, so this delivery does not apply.");
+  else if (disclosure.facts.preview.assetId !== pin.previewAssetId || disclosure.facts.preview.checksum !== pin.previewChecksum || disclosure.facts.preview.visualReviewId !== pin.visualReviewId) {
+    errors.push("The derived disclosure is not based on the pinned preview, checksum, and review.");
+  }
+  if (errors.length > 0 || disclosure.status !== "derived") return { ok: false, errors };
+  return { ok: true, value: { plan: plan.value, planSha256, evidence, disclosure: disclosure.disclosure } };
 }
 
 /**
@@ -61,8 +70,8 @@ export async function preflightGovernorDelivery(
  */
 export function buildDirectorDelivery(
   plan: PlacementPlan,
-  options: { governorMention: string; frames: SourceFrameRegistry; now?: Date },
-): Result<{ draftContent: string; envelope: Omit<HandoffEnvelope, "timestamp"> }> {
+  options: { governorMention: string; frames: SourceFrameRegistry; disclosure: string; now?: Date },
+): Result<{ draftContent: string; envelope: Omit<HandoffEnvelope, "timestamp">; registries: { frames: SourceFrameRegistry; disclosures: VisualDisclosureRegistry } }> {
   const envelope: Omit<HandoffEnvelope, "timestamp"> = {
     caseId: plan.caseId,
     artifactId: plan.planId,
@@ -78,12 +87,14 @@ export function buildDirectorDelivery(
   };
   const readable =
     `${options.governorMention} Delivery of the persisted placement plan ${plan.planId} for case ${plan.caseId}, unchanged. ` +
-    `The plan record labels both generation prompts as not executed. ${SOURCE_FRAME_DISCLOSURE} ${RELEASE_GOVERNOR_DISCLOSURE}`;
-  const checked = validateDraft(envelope, options.now ?? new Date(), readable, undefined, options.frames);
+    `The plan record labels both generation prompts as not executed. ${options.disclosure} ${RELEASE_GOVERNOR_DISCLOSURE}`;
+  if (readable.includes(SOURCE_FRAME_DISCLOSURE)) return { ok: false, errors: ["The historical frame disclosure is false for a plan with derived media."] };
+  const registries = { frames: options.frames, disclosures: staticDisclosureRegistry(plan.planId, { status: "derived", disclosure: options.disclosure }) };
+  const checked = validateDraft(envelope, options.now ?? new Date(), readable, undefined, options.frames, registries.disclosures);
   if (!checked.ok) return { ok: false, errors: checked.errors };
   if (canonical(checked.value.artifact) !== canonical(plan)) return { ok: false, errors: ["The handoff would not carry the stored plan byte-for-byte."] };
   const block = "```" + HANDOFF_FENCE + "\n" + JSON.stringify(envelope, null, 2) + "\n```";
-  return { ok: true, value: { draftContent: `${readable}\n\n${block}`, envelope } };
+  return { ok: true, value: { draftContent: `${readable}\n\n${block}`, envelope, registries } };
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);

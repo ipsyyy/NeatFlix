@@ -36,7 +36,17 @@ export type RefreshableSourceFrameRegistry = SourceFrameRegistry & { refreshScen
 /** The registry when no persistent store is configured: no frames, scenes unknown. */
 export const NO_REGISTERED_SOURCE_FRAMES: SourceFrameRegistry = Object.freeze({ find: () => null, forScene: () => null });
 
-/** Exact sentence a result must state when its plan binds a registered source frame. */
+/**
+ * The provenance-derived visual disclosure for a plan bound to a registered
+ * source frame (agents/media/derived-disclosure.ts), loaded before validation.
+ * "unedited": no derived media, so SOURCE_FRAME_DISCLOSURE stays truthful.
+ * "derived": that exact disclosure replaces it. "invalid": nothing may be said.
+ * null: not loaded, so the historical rule applies.
+ */
+export type VisualDisclosureState = { status: "unedited" } | { status: "derived"; disclosure: string } | { status: "invalid"; errors: string[] };
+export type VisualDisclosureRegistry = { find(planId: string): VisualDisclosureState | null };
+
+/** Exact sentence a result must state when its plan binds a registered source frame with no derived media. */
 export const SOURCE_FRAME_DISCLOSURE =
   "The current visual is a registered frame extracted from the selected scene; no edit or generation has been run on it.";
 

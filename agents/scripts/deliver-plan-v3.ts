@@ -95,9 +95,10 @@ async function main(): Promise<number> {
   out(`Preview evidence: ${pre.value.evidence.outcome.toUpperCase()} — ${pre.value.evidence.detail}`);
   const frames = new PersistentSourceFrameRegistry(workflow);
   await frames.refreshScene(PIN.caseId, SCENE_ID);
-  const draft = buildDirectorDelivery(pre.value.plan, { governorMention: "@release-governor", frames });
+  out(`Visual disclosure (derived from registered provenance): "${pre.value.disclosure}"`);
+  const draft = buildDirectorDelivery(pre.value.plan, { governorMention: "@release-governor", frames, disclosure: pre.value.disclosure });
   if (!draft.ok) return (out(`The Placement Director handoff does not validate: ${draft.errors.join("; ")}. Nothing was done.`), 1);
-  out(`Placement Director handoff: instructions-ready → release-governor, artifact ${PIN.planId} byte-identical to the stored plan; validates as the send boundary will.`);
+  out(`Placement Director handoff: instructions-ready → release-governor, artifact ${PIN.planId} byte-identical to the stored plan; validates as the send boundary will, with the derived disclosure.`);
   out(`\nExpected BAND room participants (exactly 3): the human owner of the NativeFrame agents [User]; ${AGENT_REGISTRY["placement-director"].displayName} [Agent ${director.agentId}]; ${AGENT_REGISTRY["release-governor"].displayName} [Agent ${governor.agentId}].`);
   out(
     [
@@ -122,7 +123,7 @@ async function main(): Promise<number> {
   if (room.participants.length !== 3 || !governorP || !human || !room.participants.some((p) => p.id === director.agentId)) {
     return (out("The room does not hold exactly the human owner, Placement Director, and Release Governor. Nothing was posted."), 1);
   }
-  const delivery = buildDirectorDelivery(pre.value.plan, { governorMention: `@${governorP.handle ?? "release-governor"}`, frames });
+  const delivery = buildDirectorDelivery(pre.value.plan, { governorMention: `@${governorP.handle ?? "release-governor"}`, frames, disclosure: pre.value.disclosure });
   if (!delivery.ok) return (out(`Handoff no longer validates: ${delivery.errors.join("; ")}. Nothing was posted.`), 1);
 
   const [agent] = createNativeFrameAgents({
@@ -161,7 +162,7 @@ async function main(): Promise<number> {
       const m = (await readItems(director)).find((x) => x.id === id);
       return m?.inserted_at ? new Date(m.inserted_at) : null;
     },
-    registries: { frames },
+    registries: delivery.value.registries,
   });
   out(posted.ok ? `Delivered as Placement Director: ${posted.messageId} (skew ${posted.skewMs} ms)` : `Delivery FAILED at ${posted.stage}: ${posted.errors.join("; ")}`);
 

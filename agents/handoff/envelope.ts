@@ -1,10 +1,13 @@
 import { HUMAN_REVIEWER, isAgentRole, type AgentRole, type HandoffParty } from "@/agents/config/roles";
 import { NO_GENERATED_PREVIEWS, validateGovernorReview, type GovernorReview, type PreviewRegistry } from "./governor-review";
 import { validatePlacementPlan, type PlacementPlan } from "./placement-plan";
-import type { SourceFrameRegistry } from "./source-frames";
+import type { SourceFrameRegistry, VisualDisclosureRegistry } from "./source-frames";
 
-/** Registries validation may consult: generated previews (approvals) and registered source frames (plans). */
-export type ValidationRegistries = { previews?: PreviewRegistry; frames?: SourceFrameRegistry };
+/**
+ * Registries validation may consult: generated previews (approvals), registered
+ * source frames (plans), and provenance-derived visual disclosures (results).
+ */
+export type ValidationRegistries = { previews?: PreviewRegistry; frames?: SourceFrameRegistry; disclosures?: VisualDisclosureRegistry };
 
 /**
  * Decisions each role may make. Advancing decisions move the case forward;
