@@ -79,7 +79,7 @@ describe("Reactor authentication", () => {
     const input = { image: new Uint8Array([1]), mimeType: "image/png" as const, prompt: "p", seed: 42, resolution: "1080p" };
     await assert.rejects(provider.generate(input, { timeoutMs: 5000 }), (e: Error) => {
       assert.ok(e instanceof ProviderRunError && /HTTP 403/.test(e.message) && !e.message.includes(KEY));
-      assert.deepEqual({ ...e.run, message: "" }, { errorCategory: "authentication", message: "", sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null });
+      assert.deepEqual({ ...e.run, message: "" }, { errorCategory: "authentication", message: "", sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null });
       return true;
     });
     await assert.rejects(provider.generate(input, { timeoutMs: 5000 }), /already ran its one session/);
@@ -140,7 +140,7 @@ describe("failed-run records", () => {
       `set_seed timed out with ${JWT}`,
       redact,
     );
-    assert.deepEqual(run, { errorCategory: "configure", message: "set_seed timed out with [REDACTED]", sessionId: "sess_abc123", commandsSent: ["set_resolution", "set_seed"], reachedReady: true, readyToCloseSeconds: 20.46, generatedSeconds: 0, resolution: { confirmedBy: "set_resolution reply" } });
+    assert.deepEqual(run, { errorCategory: "configure", message: "set_seed timed out with [REDACTED]", sessionId: "sess_abc123", commandsSent: ["set_resolution", "set_seed"], reachedReady: true, readyToCloseSeconds: 20.46, generatedSeconds: 0, resolution: { confirmedBy: "set_resolution reply" }, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null });
   });
 
   it("before readiness: nothing billed; after readiness with no observed close: unmeasured, not zero", () => {
@@ -148,6 +148,25 @@ describe("failed-run records", () => {
     const open = runRecordFromReport({ timings: { readyMs: 10, disconnectedMs: null } }, "timeout", "x");
     assert.equal(open.reachedReady, true);
     assert.equal(open.readyToCloseSeconds, null);
+  });
+
+  it("records the start acknowledgement, clip markers, download timing, and close time, dropping the clip URL", () => {
+    const run = runRecordFromReport(
+      {
+        sessionId: "sess_2",
+        startAcknowledgedBy: "broadcast",
+        clip: { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200, playlistUrl: "https://clips.example.invalid/playlist.m3u8?sig=abc" },
+        download: { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline", extra: "x" },
+        timings: { readyMs: 0, disconnectedMs: 41_200, disconnectedEpochMs: Date.UTC(2026, 9, 16, 18, 0, 41) },
+      },
+      "download",
+      "Timed out waiting for the clip download.",
+    );
+    assert.equal(run.startAcknowledgedBy, "broadcast");
+    assert.deepEqual(run.clip, { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200 });
+    assert.deepEqual(run.download, { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline" });
+    assert.equal(run.sessionClosedAt, "2026-10-16T18:00:41.000Z");
+    assert.equal(JSON.stringify(run).includes("playlist"), false, "no clip URL");
   });
 
   it("carries no credentials or media payloads", () => {

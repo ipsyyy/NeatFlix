@@ -36,7 +36,10 @@ async function run(params: PageParams) {
 /** Ends the session now (non-recoverable) and returns what the session recorded so far. */
 async function abort() {
   if (reactor) await Promise.race([reactor.disconnect(false).catch(() => {}), new Promise((r) => setTimeout(r, 5000))]);
-  if (live && live.timings.disconnectedMs === null) live.timings.disconnectedMs = performance.now();
+  if (live && live.timings.disconnectedMs === null) {
+    live.timings.disconnectedMs = performance.now();
+    live.timings.disconnectedEpochMs = Date.now();
+  }
   return live ? JSON.parse(JSON.stringify(live)) : null;
 }
 

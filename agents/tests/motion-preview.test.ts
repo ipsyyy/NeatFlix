@@ -86,27 +86,36 @@ const box = (type: string, payload: number) => {
   return b;
 };
 const VIDEO = new Uint8Array(Buffer.concat([box("ftyp", 16), box("moov", 64), box("mdat", 30_000)]));
+const FRAGMENTED = new Uint8Array(Buffer.concat([box("ftyp", 16), box("moov", 64), box("moof", 32), box("mdat", 30_000)]));
 const PROBE: VideoProbe = { formatNames: ["mov", "mp4"], durationSeconds: 3.667, videoStreams: 1, video: { codec: "h264", width: 1920, height: 1080, frameCount: 66, frameRate: 18 }, audio: { codec: "aac", sampleRate: 48000, channels: 1 } };
 
 class FakeProvider implements MotionPreviewProvider {
   readonly provider = "reactor" as const;
   readonly model = "reactor/visko-orbis-stable";
   readonly inputs: { image: Uint8Array; prompt: string; seed: number; resolution: string }[] = [];
-  constructor(private readonly behave: "ok" | "fail" | "empty" | "four-chunks" | "fail-after-ready" | "fail-before-ready" | "fail-unclosed" = "ok") {}
+  constructor(private readonly behave: "ok" | "fail" | "empty" | "four-chunks" | "fail-after-ready" | "fail-before-ready" | "fail-unclosed" | "fail-download" | "fragmented" = "ok") {}
   async generate(input: { image: Uint8Array; prompt: string; seed: number; resolution: string }): Promise<MotionPreviewResult> {
     this.inputs.push(input);
     if (this.behave === "fail") throw new ProviderError("Reactor session stopped at connect: refused.");
-    const base = { sessionId: "sess_fail_1", commandsSent: ["set_resolution"], generatedSeconds: 0, resolution: null };
+    const base = { sessionId: "sess_fail_1", commandsSent: ["set_resolution"], generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null };
     if (this.behave === "fail-after-ready") throw new ProviderRunError("Reactor session stopped at resolution: rejected.", { ...base, errorCategory: "resolution", message: "rejected", reachedReady: true, readyToCloseSeconds: 20.4 });
     if (this.behave === "fail-before-ready") throw new ProviderRunError("Reactor session stopped at connect: timed out.", { ...base, sessionId: null, commandsSent: [], errorCategory: "connect", message: "timed out", reachedReady: false, readyToCloseSeconds: null });
+    if (this.behave === "fail-download")
+      throw new ProviderRunError("Reactor session stopped at download: Timed out waiting for the clip download.", {
+        ...base, commandsSent: ["set_resolution", "set_seed", "set_image", "set_prompt", "start", "pause"], errorCategory: "download", message: "timed out", reachedReady: true, readyToCloseSeconds: 41.2, generatedSeconds: 3.667,
+        startAcknowledgedBy: "broadcast", clip: { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200 }, download: { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline" }, sessionClosedAt: "2026-10-16T18:00:41.000Z",
+      });
     if (this.behave === "fail-unclosed") throw new ProviderRunError("The session did not finish within 240 s.", { ...base, errorCategory: "timeout", message: "timeout", reachedReady: true, readyToCloseSeconds: null });
     const chunks = [0, 33, 33, ...(this.behave === "four-chunks" ? [33] : [])].map((framesEmitted, index) => ({ index, framesEmitted, audioSamples: 88000, atMs: 1000 + index * 1833 }));
     return {
       sessionId: "sess_test_1",
-      video: this.behave === "empty" ? new Uint8Array() : VIDEO,
+      video: this.behave === "empty" ? new Uint8Array() : this.behave === "fragmented" ? FRAGMENTED : VIDEO,
       videoMimeType: "video/mp4",
       requestedClipSeconds: 3.916,
-      clip: { kind: "snap", startMarker: 6.1, endMarker: 10.0, nowMarker: 10.0 },
+      clip: { kind: "snap", startMarker: 6.1, endMarker: 10.0, nowMarker: 10.0, predictedReadyInMs: 4200 },
+      startAcknowledgedBy: "broadcast",
+      download: { deadlineMs: 34_200, waitMs: 5100 },
+      sessionClosedAt: "2026-10-16T18:00:30.000Z",
       chunks,
       generation: { fps: 18, frames_per_chunk: 33, resolution: "1080p", image_conditioned: true },
       imageAccepted: { width: 832, height: 480 },
@@ -283,6 +292,21 @@ describe("Reactor motion preview: one attempt, fail closed", () => {
     assert.equal(w.provider.inputs.length, 0);
   });
 
+  it("retains a download failure's acknowledgement path, clip markers, expected readiness, wait, and close time — never the clip URL", async () => {
+    const w = await world();
+    const r = (await executeMotionPreview(w.req, w.deps({ provider: new FakeProvider("fail-download") }))) as { run?: Record<string, unknown> };
+    assert.equal(r.run?.errorCategory, "download");
+    assert.equal(r.run?.startAcknowledgedBy, "broadcast");
+    assert.deepEqual(r.run?.clip, { kind: "snap", startMarker: 6.1, endMarker: 10, nowMarker: 10, predictedReadyInMs: 4200 });
+    assert.deepEqual(r.run?.download, { deadlineMs: 34_200, waitMs: 34_210, outcome: "deadline" });
+    assert.equal(r.run?.sessionClosedAt, "2026-10-16T18:00:41.000Z");
+    assert.equal(r.run?.generatedSeconds, 3.667);
+    assert.equal(r.run?.billedSeconds, 42);
+    assert.equal(r.run?.estimatedCostUsd, 0.42);
+    assert.equal(JSON.stringify(w.ledger.outcomes.get(attemptKey(w.req))).includes("playlist"), false);
+    assert.equal(await w.store.getMediaAsset(w.req.outputAssetId), null);
+  });
+
   it("bills nothing for a session that never became ready, and leaves an unmeasured close unknown rather than zero", async () => {
     const before = await world();
     const a = (await executeMotionPreview(before.req, before.deps({ provider: new FakeProvider("fail-before-ready") }))) as { run?: Record<string, unknown> };
@@ -290,6 +314,18 @@ describe("Reactor motion preview: one attempt, fail closed", () => {
     const unclosed = await world();
     const b = (await executeMotionPreview(unclosed.req, unclosed.deps({ provider: new FakeProvider("fail-unclosed") }))) as { run?: Record<string, unknown> };
     assert.deepEqual([b.run?.billedSeconds, b.run?.estimatedCostUsd, b.run?.errorCategory], [null, null, "timeout"]);
+  });
+
+  it("accepts a decodable fragmented MP4 and records its structure, acknowledgement, and download timing", async () => {
+    const w = await world();
+    const r = await executeMotionPreview(w.req, w.deps({ provider: new FakeProvider("fragmented") }));
+    assert.ok(r.ok, JSON.stringify(r));
+    const p = (await w.store.getMediaAsset(w.req.outputAssetId))!.provenance as MotionPreviewProvenance;
+    assert.equal(p.video.structure, "fragmented");
+    assert.equal(p.startAcknowledgedBy, "broadcast");
+    assert.deepEqual([p.recording.predictedReadyInMs, p.recording.downloadDeadlineMs, p.recording.downloadWaitMs], [4200, 34_200, 5100]);
+    assert.equal(p.sessionClosedAt, "2026-10-16T18:00:30.000Z");
+    assert.equal(p.usage.generatedSeconds, 3.667);
   });
 
   it("rejects malformed, missing, out-of-range, or non-16:9 output without storing anything", async () => {

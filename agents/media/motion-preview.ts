@@ -45,9 +45,12 @@ export type MotionPreviewResult = {
   video: Uint8Array;
   videoMimeType: string;
   requestedClipSeconds: number;
-  clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number };
+  clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number; predictedReadyInMs: number | null };
   chunks: ChunkRecord[];
   generation: Record<string, unknown>;
+  startAcknowledgedBy: string;
+  download: { deadlineMs: number; waitMs: number };
+  sessionClosedAt: string;
   imageAccepted: { width: number; height: number };
   availableResolutions: string[];
   commandsSent: string[];
@@ -72,6 +75,11 @@ export type ProviderRunRecord = {
   readyToCloseSeconds: number | null;
   generatedSeconds: number;
   resolution: unknown;
+  startAcknowledgedBy: string | null;
+  /** Clip markers and expected readiness relative to the request; never the clip URL. */
+  clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number; predictedReadyInMs: number | null } | null;
+  download: { deadlineMs: number | null; waitMs: number | null; outcome: string } | null;
+  sessionClosedAt: string | null;
 };
 
 /** A provider failure that carries its run record. */
@@ -145,7 +153,19 @@ export type MotionPreviewProvenance = {
   inputPlanId: string;
   caseId: string;
   sessionId: string;
-  recording: { method: "requestClip+downloadClipAsFile"; kind: string; requestedClipSeconds: number; startMarker: number; endMarker: number; nowMarker: number };
+  recording: {
+    method: "requestClip+downloadClipAsFile";
+    kind: string;
+    requestedClipSeconds: number;
+    startMarker: number;
+    endMarker: number;
+    nowMarker: number;
+    predictedReadyInMs: number | null;
+    downloadDeadlineMs: number;
+    downloadWaitMs: number;
+  };
+  startAcknowledgedBy: string;
+  sessionClosedAt: string;
   sourceEditedStill: { assetId: string; storageRef: string; checksum: string };
   visualReview: { reviewId: string; decision: "approved"; assetChecksum: string };
   promptField: typeof MOTION_PROMPT_FIELD;
@@ -306,7 +326,7 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
     const run: ProviderRunRecord =
       error instanceof ProviderRunError
         ? error.run
-        : { errorCategory: "provider", message, sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null };
+        : { errorCategory: "provider", message, sessionId: null, commandsSent: [], reachedReady: false, readyToCloseSeconds: null, generatedSeconds: 0, resolution: null, startAcknowledgedBy: null, clip: null, download: null, sessionClosedAt: null };
     const billedSeconds = !run.reachedReady ? 0 : run.readyToCloseSeconds === null ? null : Math.ceil(run.readyToCloseSeconds);
     const report: FailedRunReport = {
       ...run,
@@ -352,7 +372,19 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
     inputPlanId: req.planId,
     caseId: inputs.caseId,
     sessionId: result.sessionId,
-    recording: { method: "requestClip+downloadClipAsFile", kind: result.clip.kind, requestedClipSeconds: result.requestedClipSeconds, startMarker: result.clip.startMarker, endMarker: result.clip.endMarker, nowMarker: result.clip.nowMarker },
+    recording: {
+      method: "requestClip+downloadClipAsFile",
+      kind: result.clip.kind,
+      requestedClipSeconds: result.requestedClipSeconds,
+      startMarker: result.clip.startMarker,
+      endMarker: result.clip.endMarker,
+      nowMarker: result.clip.nowMarker,
+      predictedReadyInMs: result.clip.predictedReadyInMs,
+      downloadDeadlineMs: result.download.deadlineMs,
+      downloadWaitMs: result.download.waitMs,
+    },
+    startAcknowledgedBy: result.startAcknowledgedBy,
+    sessionClosedAt: result.sessionClosedAt,
     sourceEditedStill: { assetId: req.editedStillAssetId, storageRef: req.editedStillStorageRef, checksum: req.editedStillChecksum },
     visualReview: { reviewId: inputs.review.review_id, decision: "approved", assetChecksum: inputs.review.asset_checksum },
     promptField: MOTION_PROMPT_FIELD,

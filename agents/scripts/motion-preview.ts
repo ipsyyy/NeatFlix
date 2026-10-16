@@ -116,6 +116,9 @@ async function main(): Promise<number> {
       out(scrub(`Failed run: category ${run.errorCategory}; session ${run.sessionId ?? "unknown (not reported)"}; reached ready ${run.reachedReady}; commands sent [${run.commandsSent.join(", ")}]`));
       out(scrub(`Billing: ready-to-close ${run.readyToCloseSeconds ?? "unmeasured"} s, billed ${run.billedSeconds ?? "unknown"} s, generated ${run.generatedSeconds} s, estimated cost ${run.estimatedCostUsd ?? "unknown"} USD at ${run.costRate.usdPerSecond} USD/s (${run.costRate.source})`));
       if (run.resolution) out(scrub(`Resolution: ${JSON.stringify(run.resolution)}`));
+      out(scrub(`Start acknowledged by: ${run.startAcknowledgedBy ?? "not acknowledged"}; session closed at ${run.sessionClosedAt ?? "unobserved"}`));
+      if (run.clip) out(scrub(`Clip: ${run.clip.kind} markers ${run.clip.startMarker}–${run.clip.endMarker} (now ${run.clip.nowMarker}); expected ready in ${run.clip.predictedReadyInMs ?? "unreported"} ms`));
+      if (run.download) out(scrub(`Download: ${run.download.outcome}; deadline ${run.download.deadlineMs ?? "none"} ms; waited ${run.download.waitMs ?? 0} ms`));
       out("The failed attempt and its outcome are retained in the local attempt ledger; no retry will be made.");
     }
     return 1;

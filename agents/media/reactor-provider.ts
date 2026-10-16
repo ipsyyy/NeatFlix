@@ -271,8 +271,10 @@ type PageOutcome = Omit<MotionPreviewResult, "video" | "sessionSeconds" | "runti
   error?: string;
   videoBase64?: string;
   videoMimeType: string;
-  timings: { readyMs: number | null; disconnectedMs: number | null };
+  timings: { readyMs: number | null; disconnectedMs: number | null; disconnectedEpochMs?: number | null };
   generatedSeconds?: number;
+  startAcknowledgedBy?: string | null;
+  download?: { deadlineMs: number | null; waitMs: number | null } | null;
   resolution?: unknown;
 };
 
@@ -335,7 +337,7 @@ export class ReactorOrbisProvider implements MotionPreviewProvider {
         seed: input.seed,
         resolution: input.resolution,
         maxVideoBytes: PREVIEW_MAX_BYTES,
-        timeouts: { connectMs: 90_000, commandMs: 20_000, generationMs: 60_000, clipMs: 30_000, downloadMs: 60_000 },
+        timeouts: { connectMs: 90_000, commandMs: 20_000, generationMs: 60_000, clipMs: 30_000 },
       };
       let timer: ReturnType<typeof setTimeout> | undefined;
       const evaluated = await Promise.race([
@@ -362,6 +364,9 @@ export class ReactorOrbisProvider implements MotionPreviewProvider {
         availableResolutions: outcome.availableResolutions,
         commandsSent: outcome.commandsSent,
         sessionSeconds: (disconnectedMs - readyMs) / 1000,
+        startAcknowledgedBy: String(outcome.startAcknowledgedBy),
+        download: { deadlineMs: Number(outcome.download?.deadlineMs), waitMs: Number(outcome.download?.waitMs) },
+        sessionClosedAt: new Date(Number(outcome.timings.disconnectedEpochMs)).toISOString(),
         generatedSeconds: Number(outcome.generatedSeconds) || 0,
         runtime: { sdk: REACTOR_SDK, bundleSha256: bundle.sha256, browser: "headless Chrome (local)" },
       };
@@ -380,8 +385,29 @@ export type LiveReport = {
   commandsSent?: unknown;
   generatedSeconds?: unknown;
   resolution?: unknown;
-  timings?: { readyMs?: number | null; disconnectedMs?: number | null };
+  startAcknowledgedBy?: unknown;
+  clip?: unknown;
+  download?: unknown;
+  timings?: { readyMs?: number | null; disconnectedMs?: number | null; disconnectedEpochMs?: number | null };
 };
+
+const finite = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** Only a clip's numeric markers and kind; its URL (and anything else) is dropped. */
+function clipMarkers(v: unknown): ProviderRunRecord["clip"] {
+  if (typeof v !== "object" || v === null) return null;
+  const c = v as Record<string, unknown>;
+  const [startMarker, endMarker, nowMarker] = [finite(c.startMarker), finite(c.endMarker), finite(c.nowMarker)];
+  if (startMarker === null || endMarker === null || nowMarker === null) return null;
+  return { kind: typeof c.kind === "string" && /^[a-z]{1,20}$/.test(c.kind) ? c.kind : "unknown", startMarker, endMarker, nowMarker, predictedReadyInMs: finite(c.predictedReadyInMs) };
+}
+
+function downloadRecord(v: unknown): ProviderRunRecord["download"] {
+  if (typeof v !== "object" || v === null) return null;
+  const d = v as Record<string, unknown>;
+  const outcome = ["downloaded", "deadline", "failed", "not-attempted"].includes(String(d.outcome)) ? String(d.outcome) : "unknown";
+  return { deadlineMs: finite(d.deadlineMs), waitMs: finite(d.waitMs), outcome };
+}
 
 /** Builds a failed run's record from whatever the page reported, redacted and without payloads. */
 export function runRecordFromReport(live: LiveReport | null, errorCategory: string, message: string, redact: (s: string) => string = (s) => s): ProviderRunRecord {
@@ -404,6 +430,10 @@ export function runRecordFromReport(live: LiveReport | null, errorCategory: stri
     readyToCloseSeconds: reachedReady && typeof closedMs === "number" && closedMs >= (readyMs as number) ? Math.round((closedMs - (readyMs as number)) / 10) / 100 : null,
     generatedSeconds: typeof live?.generatedSeconds === "number" && live.generatedSeconds >= 0 ? live.generatedSeconds : 0,
     resolution,
+    startAcknowledgedBy: live?.startAcknowledgedBy === "direct reply" || live?.startAcknowledgedBy === "broadcast" ? live.startAcknowledgedBy : null,
+    clip: clipMarkers(live?.clip),
+    download: downloadRecord(live?.download),
+    sessionClosedAt: finite(live?.timings?.disconnectedEpochMs) !== null ? new Date(live!.timings!.disconnectedEpochMs as number).toISOString() : null,
   };
 }
 

@@ -15,7 +15,13 @@
  * generation_started broadcast (the schema delivers it both ways) → pause after the first frame-bearing chunk, so the
  * run stops after exactly two frame-bearing chunks (the first chunk is a
  * zero-frame warm-up per the prompt guide's runtime caveats) → requestClip
- * covering only the frame-bearing chunks → downloadClipAsFile → disconnect.
+ * covering only the frame-bearing chunks → downloadClipAsFile, bounded by a
+ * deadline derived from the clip's predictedReadyAtMs → disconnect.
+ *
+ * Retrieval after the session closes is documented only for ClipPlayer
+ * playback, not for downloadClipAsFile, so the download runs while the session
+ * is still open and the session closes the moment the download ends or its
+ * deadline passes. Nothing is fetched after the session closes.
  */
 
 export const ORBIS_MODEL = "reactor/visko-orbis-stable";
@@ -26,6 +32,23 @@ export const FRAME_CHUNKS = 2;
 export const CLIP_MARGIN_SECONDS = 0.25;
 export const CLIP_MIN_SECONDS = 3;
 export const CLIP_MAX_SECONDS = 5;
+/** The SDK's documented grace past predictedReadyAtMs (DEFAULT_PLAYLIST_POLL_SLACK_MS). */
+export const CLIP_READY_SLACK_MS = 15_000;
+/** Time allowed to fetch and remux the segments once the clip is ready. */
+export const CLIP_TRANSFER_MS = 15_000;
+/** Firm upper bound on the whole download wait, whatever Reactor predicts. */
+export const CLIP_DOWNLOAD_MAX_MS = 45_000;
+
+/** The download deadline: predicted readiness plus documented slack and transfer time, within a firm bound. */
+export type ClipLimits = { slackMs: number; transferMs: number; maxMs: number };
+export const CLIP_LIMITS: ClipLimits = { slackMs: CLIP_READY_SLACK_MS, transferMs: CLIP_TRANSFER_MS, maxMs: CLIP_DOWNLOAD_MAX_MS };
+
+export function clipDownloadDeadlineMs(predictedReadyAtMs: number, epochNowMs: number, limits: ClipLimits = CLIP_LIMITS): { ok: true; ms: number } | { ok: false; reason: string } {
+  if (!Number.isFinite(predictedReadyAtMs)) return { ok: false, reason: "The clip has no expected-ready time." };
+  const untilReady = Math.max(0, predictedReadyAtMs - epochNowMs);
+  if (untilReady + limits.transferMs > limits.maxMs) return { ok: false, reason: `The clip is expected ready in ${Math.round(untilReady / 1000)} s, beyond the ${Math.round(limits.maxMs / 1000)} s download bound.` };
+  return { ok: true, ms: Math.min(untilReady + limits.slackMs + limits.transferMs, limits.maxMs) };
+}
 
 export type SdkMessage = { type: string; data: unknown };
 export type SdkClip = { sessionId: string; kind: string; startMarker: number; endMarker: number; nowMarker: number; predictedReadyAtMs: number; playlistUrl: string };
@@ -39,7 +62,7 @@ export interface ReactorLike {
   sendCommand(command: string, data?: object): Promise<SdkMessage | undefined>;
   uploadFile(file: Blob, options?: { name?: string }): Promise<SdkFileRef>;
   requestClip(durationSeconds: number): Promise<SdkClip>;
-  downloadClipAsFile(clip: SdkClip, filename: null, options: { jwt: string }): Promise<Blob>;
+  downloadClipAsFile(clip: SdkClip, filename: null, options: { jwt: string; signal?: AbortSignal }): Promise<Blob>;
   getSessionId(): string | undefined;
   getLastError(): { code?: string; message?: string } | undefined;
 }
@@ -53,7 +76,9 @@ export type SessionParams = {
   seed: number;
   resolution: string;
   maxVideoBytes: number;
-  timeouts: { connectMs: number; commandMs: number; generationMs: number; clipMs: number; downloadMs: number };
+  timeouts: { connectMs: number; commandMs: number; generationMs: number; clipMs: number };
+  /** Download deadline limits; the documented defaults unless a test narrows them. */
+  clipLimits?: ClipLimits;
 };
 
 export type ChunkRecord = { index: number; framesEmitted: number; audioSamples: number | null; atMs: number };
@@ -70,9 +95,13 @@ export type SessionReport = {
   resolution: { confirmedBy: "set_resolution reply" } | { rejected: string; offered: string[] } | null;
   /** How start was acknowledged: its direct reply, or the generation_started broadcast after a blank reply. */
   startAcknowledgedBy: "direct reply" | "broadcast" | null;
+  /** The requested clip's markers and expected readiness (never its URL). */
+  clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number; predictedReadyInMs: number | null } | null;
+  /** The bounded download: its deadline, how long it waited, and how it ended. */
+  download: { deadlineMs: number | null; waitMs: number | null; outcome: "downloaded" | "deadline" | "failed" | "not-attempted" } | null;
   /** Seconds of video the model reported generating (frames emitted / fps). */
   generatedSeconds: number;
-  timings: { connectStartMs: number; readyMs: number | null; startMs: number | null; pausedMs: number | null; disconnectedMs: number | null };
+  timings: { connectStartMs: number; readyMs: number | null; startMs: number | null; pausedMs: number | null; disconnectedMs: number | null; disconnectedEpochMs: number | null };
 };
 
 export type SessionOutcome =
@@ -81,7 +110,7 @@ export type SessionOutcome =
       video: Uint8Array;
       videoMimeType: string;
       requestedClipSeconds: number;
-      clip: { kind: string; startMarker: number; endMarker: number; nowMarker: number };
+      clip: NonNullable<SessionReport["clip"]>;
     })
   | (SessionReport & { ok: false; stage: string; error: string });
 
@@ -95,7 +124,13 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 const int = (v: unknown): v is number => Number.isInteger(v);
 
 /** Runs the session once. Every failure ends the session and is reported, never retried. */
-export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, now: () => number, onReport?: (live: SessionReport) => void): Promise<SessionOutcome> {
+export async function runOrbisSession(
+  reactor: ReactorLike,
+  p: SessionParams,
+  now: () => number,
+  onReport?: (live: SessionReport) => void,
+  epochNow: () => number = () => Date.now(),
+): Promise<SessionOutcome> {
   const report: SessionReport = {
     sessionId: null,
     commandsSent: [],
@@ -106,8 +141,10 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     moderation: [],
     resolution: null,
     startAcknowledgedBy: null,
+    clip: null,
+    download: null,
     generatedSeconds: 0,
-    timings: { connectStartMs: now(), readyMs: null, startMs: null, pausedMs: null, disconnectedMs: null },
+    timings: { connectStartMs: now(), readyMs: null, startMs: null, pausedMs: null, disconnectedMs: null, disconnectedEpochMs: null },
   };
   // The live report, so a controller that must abort the page can still read what happened.
   onReport?.(report);
@@ -301,13 +338,38 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     if (!(seconds >= CLIP_MIN_SECONDS && seconds <= CLIP_MAX_SECONDS)) throw new SessionFailure("capture", `The measured frame window (${seconds} s) is outside ${CLIP_MIN_SECONDS}–${CLIP_MAX_SECONDS} s; not capturing.`);
     const clip = await bounded(reactor.requestClip(seconds), p.timeouts.clipMs, "capture", "the clip request");
     if (!clip || clip.sessionId !== report.sessionId || ![clip.startMarker, clip.endMarker, clip.nowMarker].every(Number.isFinite)) throw new SessionFailure("capture", "The clip does not belong to this session or is malformed.");
+    const requestedAtEpoch = epochNow();
+    report.clip = {
+      kind: String(clip.kind).slice(0, 20),
+      startMarker: clip.startMarker,
+      endMarker: clip.endMarker,
+      nowMarker: clip.nowMarker,
+      predictedReadyInMs: Number.isFinite(clip.predictedReadyAtMs) ? Math.round(clip.predictedReadyAtMs - requestedAtEpoch) : null,
+    };
+    report.download = { deadlineMs: null, waitMs: null, outcome: "not-attempted" };
     // Confirm generation really stopped: no chunk may arrive for one more chunk's duration.
     const chunksAtCapture = report.chunks.length;
     const quietMs = Math.ceil(((started.frames_per_chunk as number) / (started.fps as number)) * 1000) + 300;
     await new Promise((r) => setTimeout(r, quietMs));
     if (failure) throw failure;
     if (report.chunks.length !== chunksAtCapture) throw new SessionFailure("pause", "Generation continued after the pause; not downloading.");
-    const blob = await bounded(reactor.downloadClipAsFile(clip, null, { jwt: p.jwt }), p.timeouts.downloadMs, "download", "the clip download");
+    // Bounded download while the session is still open; aborted at the deadline, never continued after close.
+    const deadline = clipDownloadDeadlineMs(clip.predictedReadyAtMs, epochNow(), p.clipLimits ?? CLIP_LIMITS);
+    if (!deadline.ok) throw new SessionFailure("download", deadline.reason);
+    report.download.deadlineMs = deadline.ms;
+    const abort = new AbortController();
+    const downloadStart = epochNow();
+    let blob: Blob;
+    try {
+      blob = await bounded(reactor.downloadClipAsFile(clip, null, { jwt: p.jwt, signal: abort.signal }), deadline.ms, "download", "the clip download");
+      report.download.outcome = "downloaded";
+    } catch (error) {
+      report.download.outcome = (error as Error)?.message?.startsWith("Timed out") ? "deadline" : "failed";
+      throw error;
+    } finally {
+      abort.abort();
+      report.download.waitMs = Math.round(epochNow() - downloadStart);
+    }
     if (!blob || blob.size === 0) throw new SessionFailure("download", "The downloaded clip is empty.");
     if (blob.size > p.maxVideoBytes) throw new SessionFailure("download", "The downloaded clip exceeds the size limit.");
     const video = new Uint8Array(await blob.arrayBuffer());
@@ -320,7 +382,7 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
       video,
       videoMimeType: blob.type || "video/mp4",
       requestedClipSeconds: seconds,
-      clip: { kind: clip.kind, startMarker: clip.startMarker, endMarker: clip.endMarker, nowMarker: clip.nowMarker },
+      clip: report.clip,
     };
   } catch (error) {
     const f = failure ?? (error instanceof SessionFailure ? error : new SessionFailure("session", String((error as Error)?.message ?? error).slice(0, 200)));
@@ -331,5 +393,6 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     // Always terminate (non-recoverable): billing stops and nothing can resume it.
     await reactor.disconnect(false).catch(() => {});
     report.timings.disconnectedMs = now();
+    report.timings.disconnectedEpochMs = epochNow();
   }
 }

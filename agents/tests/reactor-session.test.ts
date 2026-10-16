@@ -30,6 +30,10 @@ type Scenario = {
    * conflicting broadcast, an unconditioned broadcast, or a later conflicting state.
    */
   start?: "direct" | "blank-broadcast" | "blank-none" | "refuse" | "conflict" | "unconditioned" | "state-conflict";
+  /** Clip readiness: predicted ms after the request (null: none reported), and when the download actually resolves. */
+  readyInMs?: number | null;
+  downloadAfterMs?: number;
+  downloadNever?: boolean;
 };
 
 /** A fake Reactor client that follows the documented Visko Orbis Stable protocol. */
@@ -39,6 +43,10 @@ class FakeReactor implements ReactorLike {
   connects = 0;
   disconnects: (boolean | undefined)[] = [];
   clipSeconds: number | null = null;
+  downloadSignal: AbortSignal | null = null;
+  downloadInFlightAtDisconnect: boolean | null = null;
+  downloadsAfterDisconnect = 0;
+  private downloading = false;
   private handlers = new Map<string, ((...a: unknown[]) => void)[]>();
   private paused = false;
   private chunk = 0;
@@ -68,6 +76,7 @@ class FakeReactor implements ReactorLike {
   }
   async disconnect(recoverable?: boolean) {
     this.disconnects.push(recoverable);
+    this.downloadInFlightAtDisconnect = this.downloading;
     this.generating = false;
   }
   getSessionId() {
@@ -153,13 +162,22 @@ class FakeReactor implements ReactorLike {
   async requestClip(seconds: number): Promise<SdkClip> {
     this.calls.push("requestClip");
     this.clipSeconds = seconds;
-    return { sessionId: "sess_test_1", kind: "snap", startMarker: 10 - seconds, endMarker: 10, nowMarker: 10, predictedReadyAtMs: 0, playlistUrl: "https://example.invalid/playlist.m3u8" };
+    const ready = this.s.readyInMs === undefined ? 0 : this.s.readyInMs === null ? Number.NaN : Date.now() + this.s.readyInMs;
+    return { sessionId: "sess_test_1", kind: "snap", startMarker: 10 - seconds, endMarker: 10, nowMarker: 10, predictedReadyAtMs: ready, playlistUrl: "https://example.invalid/playlist.m3u8" };
   }
-  async downloadClipAsFile(_clip: SdkClip, filename: null, options: { jwt: string }) {
+  async downloadClipAsFile(_clip: SdkClip, filename: null, options: { jwt: string; signal?: AbortSignal }) {
     this.calls.push("downloadClipAsFile");
+    if (this.disconnects.length > 0) this.downloadsAfterDisconnect++;
     assert.equal(filename, null);
     assert.equal(options.jwt, "header.payload.signature");
-    return new Blob([new Uint8Array(20_000)], { type: "video/mp4" });
+    this.downloadSignal = options.signal ?? null;
+    this.downloading = true;
+    // The SDK polls the clip's manifest until it is ready; an abort signal ends that wait.
+    return new Promise<Blob>((resolve, reject) => {
+      const done = () => ((this.downloading = false), resolve(new Blob([new Uint8Array(20_000)], { type: "video/mp4" })));
+      options.signal?.addEventListener("abort", () => ((this.downloading = false), reject(new Error("AbortError"))));
+      if (!this.s.downloadNever) setTimeout(done, this.s.downloadAfterMs ?? 0);
+    });
   }
 }
 
@@ -172,7 +190,7 @@ const params = (over: Partial<SessionParams> = {}): SessionParams => ({
   seed: 42,
   resolution: "1080p",
   maxVideoBytes: 64 * 1024 * 1024,
-  timeouts: { connectMs: 2000, commandMs: 2000, generationMs: 2000, clipMs: 2000, downloadMs: 2000 },
+  timeouts: { connectMs: 2000, commandMs: 2000, generationMs: 2000, clipMs: 2000 },
   ...over,
 });
 
@@ -243,7 +261,7 @@ describe("Orbis session: one bounded run", () => {
 
   it("sends no generation command when the resolution cannot be confirmed", async () => {
     for (const s of [{ refuse: "set_resolution" }, { ackResolution: "2k" }, { hang: "set_resolution" }] satisfies Scenario[]) {
-      const { fake, outcome } = await run({ initialState: false, ...s }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+      const { fake, outcome } = await run({ initialState: false, ...s }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000 } });
       assert.equal(outcome.ok, false, JSON.stringify(s));
       assert.equal((outcome as { stage: string }).stage, "resolution", JSON.stringify(s));
       assert.deepEqual(fake.calls, ["set_resolution"], JSON.stringify(s));
@@ -252,7 +270,7 @@ describe("Orbis session: one bounded run", () => {
   });
 
   it("reports a timeout before readiness: never ready, nothing sent, nothing billed", async () => {
-    const { fake, outcome } = await run({ neverReady: true }, { timeouts: { connectMs: 40, commandMs: 2000, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    const { fake, outcome } = await run({ neverReady: true }, { timeouts: { connectMs: 40, commandMs: 2000, generationMs: 2000, clipMs: 2000 } });
     assert.equal(outcome.ok, false);
     assert.equal((outcome as { stage: string }).stage, "connect");
     assert.equal(outcome.timings.readyMs, null);
@@ -262,7 +280,7 @@ describe("Orbis session: one bounded run", () => {
   });
 
   it("reports a timeout after readiness with the session ID, commands, and close time", async () => {
-    const { outcome } = await run({ initialState: false, hang: "set_seed" }, { timeouts: { connectMs: 2000, commandMs: 40, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    const { outcome } = await run({ initialState: false, hang: "set_seed" }, { timeouts: { connectMs: 2000, commandMs: 40, generationMs: 2000, clipMs: 2000 } });
     assert.equal(outcome.ok, false);
     assert.equal(outcome.sessionId, "sess_test_1");
     assert.deepEqual(outcome.commandsSent, ["set_resolution", "set_seed"]);
@@ -276,7 +294,7 @@ describe("Orbis session: one bounded run", () => {
     const original = fake.sendCommand.bind(fake);
     // A deployment that never broadcasts state at all cannot confirm the seed: fail closed before start.
     fake.sendCommand = async (name, data) => (name === "set_prompt" ? { type: "prompt_accepted", data: { prompt: (data as { prompt: string }).prompt } } : original(name, data));
-    const outcome = await runOrbisSession(fake, params({ timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } }), fake.now);
+    const outcome = await runOrbisSession(fake, params({ timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000 } }), fake.now);
     assert.equal(outcome.ok, false);
     assert.equal((outcome as { stage: string }).stage, "conditions");
     assert.equal(fake.calls.includes("start"), false);
@@ -307,7 +325,7 @@ describe("Orbis session: one bounded run", () => {
   });
 
   it("fails closed when a blank start reply is followed by no broadcast within the bound", async () => {
-    const { fake, outcome } = await run({ initialState: false, start: "blank-none" }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    const { fake, outcome } = await run({ initialState: false, start: "blank-none" }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000 } });
     assert.equal(outcome.ok, false);
     assert.match((outcome as { error: string }).error, /Timed out waiting for the generation_started broadcast/);
     assert.equal(fake.commands.filter((c) => c.name === "start").length, 1, "no second start");
@@ -315,7 +333,7 @@ describe("Orbis session: one bounded run", () => {
   });
 
   it("fails closed when start never replies at all", async () => {
-    const { fake, outcome } = await run({ initialState: false, hang: "start" }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    const { fake, outcome } = await run({ initialState: false, hang: "start" }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000 } });
     assert.equal(outcome.ok, false);
     assert.match((outcome as { error: string }).error, /Timed out waiting for the start reply/);
     assert.equal(fake.commands.filter((c) => c.name === "start").length, 1);
@@ -327,6 +345,43 @@ describe("Orbis session: one bounded run", () => {
       assert.equal(outcome.ok, false, start);
       assert.equal((outcome as { stage: string }).stage, "start", start);
       assert.equal(fake.calls.includes("requestClip"), false, `${start}: nothing captured`);
+      assert.deepEqual(fake.disconnects, [false]);
+    }
+  });
+
+  const narrow = { slackMs: 40, transferMs: 40, maxMs: 300 };
+
+  it("waits for a delayed clip and retrieves it within the derived deadline, then closes the session", async () => {
+    // Readiness lands after the post-pause quiet window (~2.13 s), so the download must wait for it.
+    const { fake, outcome } = await run({ initialState: false, readyInMs: 2300, downloadAfterMs: 200 }, { clipLimits: narrow });
+    assert.ok(outcome.ok, JSON.stringify(outcome));
+    assert.equal(outcome.download?.outcome, "downloaded");
+    assert.ok(outcome.download!.deadlineMs! > narrow.slackMs + narrow.transferMs && outcome.download!.deadlineMs! <= narrow.maxMs, `deadline ${outcome.download?.deadlineMs}`);
+    assert.ok(outcome.download!.waitMs! >= 190, "waited for the delayed clip");
+    assert.ok(outcome.clip && outcome.clip.predictedReadyInMs !== null && outcome.clip.predictedReadyInMs >= 2200);
+    assert.equal(JSON.stringify(outcome).includes("example.invalid"), false, "the clip URL is never reported");
+    assert.equal(fake.downloadInFlightAtDisconnect, false, "the download ended before the session closed");
+  });
+
+  it("aborts at the deadline and closes the session at once; nothing is fetched after closing", async () => {
+    const { fake, outcome } = await run({ initialState: false, readyInMs: 20, downloadNever: true }, { clipLimits: narrow });
+    assert.equal(outcome.ok, false);
+    assert.equal((outcome as { stage: string }).stage, "download");
+    assert.equal(outcome.download?.outcome, "deadline");
+    assert.equal(fake.downloadSignal?.aborted, true, "the SDK download was aborted");
+    assert.equal(fake.downloadInFlightAtDisconnect, false, "no polling continued into or past the close");
+    assert.equal(fake.downloadsAfterDisconnect, 0);
+    assert.deepEqual(fake.disconnects, [false]);
+    assert.ok(outcome.download!.waitMs! <= narrow.maxMs + 100);
+  });
+
+  it("does not wait at all when the predicted readiness is beyond the firm bound, or missing", async () => {
+    for (const readyInMs of [10_000, null]) {
+      const { fake, outcome } = await run({ initialState: false, readyInMs }, { clipLimits: narrow });
+      assert.equal(outcome.ok, false, String(readyInMs));
+      assert.equal((outcome as { stage: string }).stage, "download");
+      assert.equal(fake.calls.includes("downloadClipAsFile"), false, `${readyInMs}: no download attempted`);
+      assert.equal(outcome.download?.outcome, "not-attempted");
       assert.deepEqual(fake.disconnects, [false]);
     }
   });
@@ -354,7 +409,7 @@ describe("Orbis session: one bounded run", () => {
   it("times out instead of waiting forever, and still disconnects", async () => {
     const stalled = new FakeReactor();
     (stalled as unknown as { nextChunk: () => void }).nextChunk = () => {};
-    const r = await runOrbisSession(stalled, params({ timeouts: { connectMs: 2000, commandMs: 2000, generationMs: 50, clipMs: 2000, downloadMs: 2000 } }), stalled.now);
+    const r = await runOrbisSession(stalled, params({ timeouts: { connectMs: 2000, commandMs: 2000, generationMs: 50, clipMs: 2000 } }), stalled.now);
     assert.equal(r.ok, false);
     assert.match((r as { error: string }).error, /Timed out/);
     assert.deepEqual(stalled.disconnects, [false]);
