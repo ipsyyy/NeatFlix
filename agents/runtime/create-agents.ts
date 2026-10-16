@@ -5,6 +5,7 @@ import type { BandUrls, RoleCredentials } from "@/agents/config/env";
 import type { AgentRole } from "@/agents/config/roles";
 import { bandClientFor } from "@/agents/band/case-room";
 import { NO_GENERATED_PREVIEWS } from "@/agents/handoff/governor-review";
+import { PersistentSourceFrameRegistry } from "@/agents/persistence/source-frames";
 import { PersistentPreviewRegistry, type WorkflowRegistry } from "@/agents/persistence/workflow";
 import { toolsForRole } from "@/agents/tools/evidence-tools";
 import { AcceptedPlanRegistry, inMemoryAcceptedPlans } from "./accepted-plans";
@@ -61,6 +62,8 @@ export function createNativeFrameAgents(options: {
       const plans = governor && options.workflow ? new AcceptedPlanRegistry(options.workflow) : inMemoryAcceptedPlans;
       const previews = governor && options.workflow ? new PersistentPreviewRegistry(options.workflow) : NO_GENERATED_PREVIEWS;
       const workflow = options.workflow;
+      // Placement Director binds, and Release Governor checks, registered source frames from storage.
+      const frames = workflow && (governor || role === "placement-director") ? new PersistentSourceFrameRegistry(workflow) : undefined;
       const persistReview =
         governor && workflow
           ? async (envelope: unknown) => {
@@ -75,7 +78,7 @@ export function createNativeFrameAgents(options: {
         ...turnLimitsFor(role),
         systemPrompt: buildSystemPrompt(role, { humanOnlyMentions: options.mentionHumanOnly === true }),
         // Audit which evidence tools the model used (tool name only, never arguments or results).
-        customTools: toolsForRole(role, { plans, previews }).map((tool) => ({
+        customTools: toolsForRole(role, { plans, previews, frames }).map((tool) => ({
           ...tool,
           handler: (args: Record<string, unknown>) => {
             logger.info("Evidence tool called", { tool: tool.name });
@@ -84,7 +87,7 @@ export function createNativeFrameAgents(options: {
         })),
         logger,
         mentionPolicy: { role, roleByAgentId, humanOnly: options.mentionHumanOnly === true },
-        sendBoundary: { previews, ...(persistReview ? { onPosted: persistReview } : {}) },
+        sendBoundary: { previews, frames, ...(persistReview ? { onPosted: persistReview } : {}) },
         ...(options.onClaudeCall ? { clientFactory: instrumentedClaudeFactory(role, options.onClaudeCall) } : {}),
       });
       const agent = Agent.create({
@@ -95,7 +98,10 @@ export function createNativeFrameAgents(options: {
           roleByAgentId,
           logger,
           closeRejectedVia(bandClientFor({ role, agentId, apiKey }, options.urls)),
-          governor ? { plans, ...(previews instanceof PersistentPreviewRegistry ? { previews } : {}) } : {},
+          {
+            ...(governor ? { plans, ...(previews instanceof PersistentPreviewRegistry ? { previews } : {}) } : {}),
+            ...(frames ? { frames } : {}),
+          },
         ),
         // The SDK default (false) joins only rooms added while the agent is
         // running. Case rooms outlive agent restarts, so rejoin them on start;

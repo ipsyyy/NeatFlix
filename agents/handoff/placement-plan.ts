@@ -2,6 +2,7 @@ import { campaigns } from "@/data/campaigns";
 import { catalogue } from "@/data/catalogue";
 import { getSceneReview } from "@/data/scene-candidates";
 import type { EvidenceItem } from "./envelope";
+import { NO_REGISTERED_SOURCE_FRAMES, validateFrameBinding, type SourceFrameRegistry } from "./source-frames";
 
 /**
  * Typed placement-plan artifact produced by Placement Director
@@ -74,7 +75,23 @@ export type PlacementPlan = {
     stillImageEdit: { target: "gemini-nano-banana"; status: "not-executed"; label: string; prompt: string };
     motion: { target: "reactor"; status: "not-executed"; label: string; durationSeconds: number; prompt: string };
   };
-  sourceMedia: { kind: "title-artwork-stand-in"; isSceneFrame: false; src: string; note: string };
+  /**
+   * The visual the plan's prompts apply to: the approved title-artwork stand-in,
+   * or a registered source frame bound by asset ID, storage reference, and
+   * checksum so later edits and previews can prove which pixels were used.
+   */
+  sourceMedia:
+    | { kind: "title-artwork-stand-in"; isSceneFrame: false; src: string; note: string }
+    | {
+        kind: "registered-source-frame";
+        isSceneFrame: true;
+        assetId: string;
+        storageRef: string;
+        checksum: string;
+        sourceAssetId: string;
+        timestampSeconds: number;
+        note: string;
+      };
   assumptions: string[];
   blockers: string[];
   evidence: EvidenceItem[];
@@ -140,8 +157,12 @@ export function generationClaims(text: string): string[] {
   return affirmed(text, GENERATION_CLAIM, { anchor: GENERATION_VERB, allowFuture: true });
 }
 
-/** Validates a placement plan's schema and safety rules against the approved fixtures. */
-export function validatePlacementPlan(input: unknown, expectedCaseId?: string): string[] {
+/**
+ * Validates a placement plan's schema and safety rules against the approved
+ * fixtures. `frames` holds revalidated registered source frames; without one,
+ * no registered frame is accepted and a plan naming one fails closed.
+ */
+export function validatePlacementPlan(input: unknown, expectedCaseId?: string, frames: SourceFrameRegistry = NO_REGISTERED_SOURCE_FRAMES): string[] {
   if (!isObj(input)) return ["artifact must be a placement-plan object."];
   const p = input as Record<string, unknown>;
   const e: string[] = [];
@@ -220,15 +241,26 @@ export function validatePlacementPlan(input: unknown, expectedCaseId?: string): 
   }
 
   const media = isObj(p.sourceMedia) ? p.sourceMedia : {};
-  if (media.kind !== "title-artwork-stand-in" || media.isSceneFrame !== false || !str(media.src, 300) || !str(media.note)) {
-    e.push("artifact.sourceMedia must be the title-artwork stand-in with isSceneFrame false, its src, and a note.");
-  } else if (title && title.artwork.kind === "image" && media.src !== title.artwork.src) {
-    e.push("artifact.sourceMedia.src must be the approved title artwork.");
-  } else if (media.note !== STAND_IN_DISCLOSURE) {
-    e.push(`artifact.sourceMedia.note must be exactly: "${STAND_IN_DISCLOSURE}"`);
-  }
-  for (const term of misleadingFrameTerms(strings(p).join("\n"))) {
-    e.push(`Do not call the stand-in a "${term}"; it is approved title artwork, not footage.`);
+  const usesFrame = media.kind === "registered-source-frame";
+  const sceneFrames = typeof p.caseId === "string" && typeof scene.sceneId === "string" ? frames.forScene(p.caseId, scene.sceneId) : null;
+  if (usesFrame) {
+    e.push(...validateFrameBinding(media, { caseId: p.caseId, titleId: src.titleId, sceneId: scene.sceneId }, recorded, frames));
+  } else {
+    // Stand-in route: only when no registered frame exists for the scene, and never
+    // as a silent fallback for a frame that failed validation.
+    if (sceneFrames?.invalid) e.push("A registered source frame for this scene failed validation; the plan is blocked, not switched to the stand-in.");
+    else if (sceneFrames?.valid) e.push(`A registered source frame (${sceneFrames.valid.assetId}) exists for this scene; bind it instead of the stand-in.`);
+    if (media.kind !== "title-artwork-stand-in" || media.isSceneFrame !== false || !str(media.src, 300) || !str(media.note)) {
+      e.push("artifact.sourceMedia must be the title-artwork stand-in with isSceneFrame false, its src, and a note, or a registered source frame.");
+    } else if (title && title.artwork.kind === "image" && media.src !== title.artwork.src) {
+      e.push("artifact.sourceMedia.src must be the approved title artwork.");
+    } else if (media.note !== STAND_IN_DISCLOSURE) {
+      e.push(`artifact.sourceMedia.note must be exactly: "${STAND_IN_DISCLOSURE}"`);
+    }
+    // A real extracted frame may be called a frame; the stand-in never may.
+    for (const term of misleadingFrameTerms(strings(p).join("\n"))) {
+      e.push(`Do not call the stand-in a "${term}"; it is approved title artwork, not footage.`);
+    }
   }
 
   if (!Array.isArray(p.assumptions) || !p.assumptions.every((s) => str(s))) e.push("artifact.assumptions must be a list of strings.");

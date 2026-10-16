@@ -1,3 +1,4 @@
+import type { ValidationRegistries } from "@/agents/handoff/envelope";
 import { stampOutgoingContent } from "@/agents/handoff/stamp";
 import { checkHandoffTimestamp } from "@/agents/handoff/timestamps";
 
@@ -16,9 +17,10 @@ export async function postWithTrustedTimestamp(options: {
   post: (stampedContent: string) => Promise<{ id: string }>;
   readPostedAt: (messageId: string) => Promise<Date | null>;
   clock?: () => Date;
+  registries?: ValidationRegistries;
 }): Promise<TrustedPost> {
   const clock = options.clock ?? (() => new Date());
-  const stamped = stampOutgoingContent(options.draftContent, clock());
+  const stamped = stampOutgoingContent(options.draftContent, clock(), options.registries);
   if (!stamped.ok) return { ok: false, stage: "validate", errors: stamped.errors };
   if (!stamped.timestamp) return { ok: false, stage: "validate", errors: ["No handoff to stamp."] };
 

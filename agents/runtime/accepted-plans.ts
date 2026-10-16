@@ -27,11 +27,13 @@ export class AcceptedPlanRegistry {
 
   /** Records a plan accepted at the gate. Returns why it was not recorded; nothing is recorded on failure. */
   async record(plan: PlacementPlan): Promise<string[]> {
-    if (validatePlacementPlan(plan, plan.caseId).length > 0) return ["Plan does not validate; not recorded."];
     if (!this.workflow) {
+      // Memory only: no registry, so a plan naming a registered frame fails closed here.
+      if (validatePlacementPlan(plan, plan.caseId).length > 0) return ["Plan does not validate; not recorded."];
       this.remember(plan);
       return [];
     }
+    // With storage, savePlan validates against the revalidated source frames for the plan's scene.
     let saved: Awaited<ReturnType<WorkflowRegistry["savePlan"]>>;
     try {
       saved = await this.workflow.savePlan(plan);

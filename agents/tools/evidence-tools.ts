@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { AgentRole } from "@/agents/config/roles";
 import { NO_GENERATED_PREVIEWS, type PreviewRegistry } from "@/agents/handoff/governor-review";
 import { validatePlacementPlan } from "@/agents/handoff/placement-plan";
+import { NO_REGISTERED_SOURCE_FRAMES, SOURCE_FRAME_DISCLOSURE, type RefreshableSourceFrameRegistry, type SourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { validateDraft } from "@/agents/handoff/stamp";
 import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
 import { campaigns } from "@/data/campaigns";
@@ -212,7 +213,7 @@ const getSourceArtwork: CustomToolDef = {
   },
 };
 
-function validateHandoffTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS): CustomToolDef {
+function validateHandoffTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS, frames: SourceFrameRegistry = NO_REGISTERED_SOURCE_FRAMES): CustomToolDef {
   return {
     name: "nativeframe_validate_handoff",
     description:
@@ -229,7 +230,7 @@ function validateHandoffTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS):
         return { ok: false, errors: ["handoffJson is not valid JSON."] };
       }
       const readable = typeof args.readableText === "string" ? args.readableText.trim() : undefined;
-      const result = validateDraft(parsed, new Date(), readable, previews);
+      const result = validateDraft(parsed, new Date(), readable, previews, frames);
       return result.ok
         ? { ok: true, note: "Timestamp is attached by NativeFrame at send time." }
         : { ok: false, errors: result.errors };
@@ -242,7 +243,7 @@ function validateHandoffTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS):
  * the Placement Director handoff. Visual checks are "not-evaluated" because no
  * generated preview exists to inspect.
  */
-function checkPlacementPlanTool(plans: AcceptedPlanRegistry): CustomToolDef {
+function checkPlacementPlanTool(plans: AcceptedPlanRegistry, frames: SourceFrameRegistry): CustomToolDef {
   return {
     name: "nativeframe_check_placement_plan",
     description:
@@ -259,7 +260,7 @@ function checkPlacementPlanTool(plans: AcceptedPlanRegistry): CustomToolDef {
       const title = findTitle(titleId);
       const found = findScene(sceneId);
       const campaign = findCampaign(campaignId);
-      const planErrors = validatePlacementPlan(plan, typeof plan.caseId === "string" ? plan.caseId : undefined);
+      const planErrors = validatePlacementPlan(plan, typeof plan.caseId === "string" ? plan.caseId : undefined, frames);
       const match = found && campaign ? matchCampaignToScene(campaign, found.scene, found.title) : null;
       const prompts = get(plan, "prompts");
       const unexecuted = ["stillImageEdit", "motion"].every((k) => get(get(prompts, k), "status") === "not-executed");
@@ -312,7 +313,50 @@ export function previewStatusTool(previews: PreviewRegistry = NO_GENERATED_PREVI
  * Stores the Release Governor's tools read from: plans accepted at its gate and
  * the preview registry. Defaults hold no persisted data and no previews.
  */
-export type GovernorToolStores = { plans?: AcceptedPlanRegistry; previews?: PreviewRegistry };
+export type GovernorToolStores = { plans?: AcceptedPlanRegistry; previews?: PreviewRegistry; frames?: RefreshableSourceFrameRegistry };
+
+/**
+ * Placement Director: looks up the registered, revalidated source frame for a
+ * scene. Returns exact binding fields to copy into the plan, says when none is
+ * registered (use the stand-in), and blocks when a registered frame is invalid.
+ */
+function sourceFrameTool(frames: RefreshableSourceFrameRegistry | undefined): CustomToolDef {
+  return {
+    name: "nativeframe_get_source_frame",
+    description:
+      "Look up the registered source frame for the selected scene in this case. If one is registered and valid, returns the exact sourceMedia fields to bind in the plan. If none is registered, use the approved title-artwork stand-in. If a registered frame fails validation, the plan must be blocked.",
+    schema: z.object({
+      caseId: z.string().min(1).max(100).describe("The caseId from the handoff"),
+      sceneId: z.string().min(1).max(60).describe("The selected scene ID, e.g. luv-scene-1"),
+    }),
+    handler: async (args) => {
+      if (!frames) return { found: false, status: "none", message: "No source-frame registry is configured; use the approved title-artwork stand-in." };
+      const state = await frames.refreshScene(String(args.caseId).trim(), String(args.sceneId).trim());
+      if (state.invalid) {
+        return { found: false, status: "invalid", message: "A registered source frame for this scene failed validation. Decide \"blocked\"; do not use the stand-in." };
+      }
+      if (!state.valid) return { found: false, status: "none", message: "No source frame is registered for this scene; use the approved title-artwork stand-in." };
+      const f = state.valid;
+      return {
+        found: true,
+        status: "registered",
+        source: "NativeFrame media registry (revalidated: source video, case, title, scene window, private storage, checksum).",
+        sourceMedia: {
+          kind: "registered-source-frame",
+          isSceneFrame: true,
+          assetId: f.assetId,
+          storageRef: f.storageRef,
+          checksum: f.checksum,
+          sourceAssetId: f.sourceAssetId,
+          timestampSeconds: f.timestampSeconds,
+          note: SOURCE_FRAME_DISCLOSURE,
+        },
+        mimeType: f.mimeType,
+        note: "Copy sourceMedia into the plan exactly. The frame is unedited; no generation has been run on it.",
+      };
+    },
+  };
+}
 
 /** Tools each role may use. Downstream roles get evidence for their own step only. */
 export function toolsForRole(role: AgentRole, stores: GovernorToolStores = {}): CustomToolDef[] {
@@ -324,10 +368,10 @@ export function toolsForRole(role: AgentRole, stores: GovernorToolStores = {}): 
     case "campaign-matcher":
       return [getSelectedScene, getCampaign, evaluateCampaignMatch, validateHandoffTool()];
     case "placement-director":
-      return [getSelectedScene, getCampaign, getSourceArtwork, validateHandoffTool()];
+      return [getSelectedScene, getCampaign, getSourceArtwork, sourceFrameTool(stores.frames), validateHandoffTool(NO_GENERATED_PREVIEWS, stores.frames)];
     case "release-governor": {
       const previews = stores.previews ?? NO_GENERATED_PREVIEWS;
-      return [checkPlacementPlanTool(stores.plans ?? inMemoryAcceptedPlans), previewStatusTool(previews), validateHandoffTool(previews)];
+      return [checkPlacementPlanTool(stores.plans ?? inMemoryAcceptedPlans, stores.frames ?? NO_REGISTERED_SOURCE_FRAMES), previewStatusTool(previews), validateHandoffTool(previews)];
     }
     default:
       return [validateHandoffTool()];

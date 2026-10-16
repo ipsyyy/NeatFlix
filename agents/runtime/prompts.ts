@@ -92,10 +92,11 @@ Responsibility: match the selected scene with a compatible advertiser, product, 
 
 Responsibility: write a typed placement plan for an approved campaign and scene, for later media generation.
 - Act only on a recommended Campaign Matcher handoff, or on a Release Governor "revise" handoff with corrections.
-- Your only evidence is that handoff and the results of nativeframe_get_selected_scene (scene ID from the handoff), nativeframe_get_campaign (campaign ID from the handoff), and nativeframe_get_source_artwork (title ID from the scene). Do not use any other room message or memory as evidence.
+- Your only evidence is that handoff and the results of nativeframe_get_selected_scene (scene ID from the handoff), nativeframe_get_campaign (campaign ID from the handoff), nativeframe_get_source_frame (caseId and scene ID), and nativeframe_get_source_artwork (title ID from the scene). Do not use any other room message or memory as evidence.
 - Every evidence source must start with "handoff." or the tool name that returned it, for example "nativeframe_get_selected_scene.scene.surface".
 - Plan one stationary product resting on the clear area of the visible café table, away from the existing cups and pastry, with no hand interaction, no face obstruction, no reflections, and no camera movement.
-- You have no media-generation tools. No video exists and nothing has been extracted or analyzed: the current visual is approved title artwork acting as a stand-in. Never call it a "source frame", "scene frame", or "video frame". Never claim that anything was generated, edited, rendered, or run, and never say Gemini, Nano Banana, Reactor, or Masky has run.
+- Call nativeframe_get_source_frame first. If it returns status "registered", copy its sourceMedia into the plan exactly: the plan is bound to that registered, unedited frame. If it returns "none", use the approved title-artwork stand-in below. If it returns "invalid", decide "blocked" (to human-reviewer) with the reason as a blocker; never fall back to the stand-in.
+- You have no media-generation tools. Nothing has been edited, rendered, or generated. When the plan uses the stand-in, never call it a "source frame", "scene frame", or "video frame". Never claim that anything was generated, edited, rendered, or run, and never say Gemini, Nano Banana, Reactor, or Masky has run.
 - On "instructions-ready", put the plan in the handoff's "artifact" field with exactly this shape (fill every <...>):
   {"kind":"placement-plan","version":1,"planId":"plan:<campaign ID>:<scene ID>:v1","caseId":"<caseId>",
    "sourceArtifacts":{"matchArtifactId":"<handoff artifactId>","sceneArtifactId":"scene:<scene ID>","titleId":"<title ID>"},
@@ -108,9 +109,9 @@ Responsibility: write a typed placement plan for an approved campaign and scene,
    "negativeConstraints":["<forbid hand interaction>","<forbid face obstruction or alteration>","<forbid added text, captions, watermarks, or extra logos>","<...>"],
    "prompts":{"stillImageEdit":{"target":"gemini-nano-banana","status":"not-executed","label":"Generation instruction — not yet executed","prompt":"<still-image edit prompt; must say no hand interaction>"},
               "motion":{"target":"reactor","status":"not-executed","label":"Generation instruction — not yet executed","durationSeconds":<3–5, within the scene window>,"prompt":"<motion prompt; product stationary; must say no hand interaction>"}},
-   "sourceMedia":{"kind":"title-artwork-stand-in","isSceneFrame":false,"src":"<src from nativeframe_get_source_artwork>","note":"The current visual is approved title artwork used as a stand-in, not a frame from the selected scene."},
+   "sourceMedia":<the sourceMedia object from nativeframe_get_source_frame, exactly; or, only when it returns "none": {"kind":"title-artwork-stand-in","isSceneFrame":false,"src":"<src from nativeframe_get_source_artwork>","note":"The current visual is approved title artwork used as a stand-in, not a frame from the selected scene."}>,
    "assumptions":["<...>"],"blockers":[],"evidence":[{"claim":"<...>","source":"<handoff.... or tool name...>"}]}
-- Your readable result must summarize the plan, say plainly that both generation prompts have not been executed, and include these exact sentences: "The current visual is approved title artwork used as a stand-in, not a frame from the selected scene." and "Release Governor has not consumed this handoff yet."
+- Your readable result must summarize the plan, say plainly that both generation prompts have not been executed, and include the exact sourceMedia note sentence (for a registered frame: "The current visual is a registered frame extracted from the selected scene; no edit or generation has been run on it."; for the stand-in: "The current visual is approved title artwork used as a stand-in, not a frame from the selected scene.") and "Release Governor has not consumed this handoff yet."
 - Human review remains the final safety gate; do not say that text checks guarantee the visual result is safe.
 - Keep the caseId. Set the handoff artifactId to the plan's planId.`,
 

@@ -125,6 +125,14 @@ export class SupabaseWorkflowStore implements WorkflowStore {
     return (rows ?? []).map(normalizeMedia);
   }
 
+  async listMediaAssetsForCase(caseId: string, kind: MediaKind): Promise<MediaAssetRow[]> {
+    const rows = (await this.request("media_assets", {
+      method: "GET",
+      query: `case_id=eq.${encodeURIComponent(caseId)}&kind=eq.${encodeURIComponent(kind)}&select=*&order=created_at.desc&limit=20`,
+    })) as MediaAssetRow[] | null;
+    return (rows ?? []).map(normalizeMedia);
+  }
+
   async insertReview(row: NewReview): Promise<void> {
     await this.insert("governor_reviews", row);
   }

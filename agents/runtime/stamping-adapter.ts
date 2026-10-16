@@ -3,6 +3,7 @@ import type { Logger } from "@band-ai/sdk/core";
 import type { AgentRole } from "@/agents/config/roles";
 import type { HandoffEnvelope } from "@/agents/handoff/envelope";
 import type { PreviewRegistry } from "@/agents/handoff/governor-review";
+import type { SourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { canonicalMentions, checkMentions, type MentionArg, type RoomMember } from "@/agents/handoff/mentions";
 import { HANDOFF_FENCE, extractHandoffs } from "@/agents/handoff/protocol";
 import { stampOutgoingContent } from "@/agents/handoff/stamp";
@@ -18,6 +19,8 @@ const BLOCK = new RegExp("```" + HANDOFF_FENCE + "\\s*\\n[\\s\\S]*?\\n```", "g")
  */
 export type SendBoundaryOptions = {
   previews?: PreviewRegistry;
+  /** Registered source frames a posted placement plan may bind to. */
+  frames?: SourceFrameRegistry;
   onPosted?: (envelope: HandoffEnvelope) => Promise<void>;
 };
 
@@ -107,7 +110,7 @@ export function withHandoffStamping<T extends object>(
         errors: [`A NativeFrame message must contain exactly one ${handoffs === 0 ? "handoff; plain text is not posted" : "handoff, not several"}.`],
       };
     }
-    const result = stampOutgoingContent(content, clock(), { previews: options.previews });
+    const result = stampOutgoingContent(content, clock(), { previews: options.previews, frames: options.frames });
     if (result.ok && result.timestamp) {
       logger.info("Stamped handoff at send boundary", { timestamp: result.timestamp, handoffs: result.handoffs });
     }

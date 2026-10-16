@@ -114,6 +114,7 @@ export interface WorkflowStore {
   updateMediaAsset(assetId: string, patch: Partial<Omit<NewMediaAsset, "asset_id">>): Promise<void>;
   getMediaAsset(assetId: string): Promise<MediaAssetRow | null>;
   listMediaAssetsForPlan(planId: string, kind: MediaKind): Promise<MediaAssetRow[]>;
+  listMediaAssetsForCase(caseId: string, kind: MediaKind): Promise<MediaAssetRow[]>;
 
   insertReview(row: NewReview): Promise<void>;
   getReview(reviewId: string): Promise<ReviewRow | null>;

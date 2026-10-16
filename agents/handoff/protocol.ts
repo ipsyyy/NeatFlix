@@ -1,6 +1,5 @@
 import { HUMAN_REVIEWER, type AgentRole, type HandoffParty } from "@/agents/config/roles";
-import { validateHandoff, type HandoffDecision, type HandoffEnvelope, type ValidationResult } from "./envelope";
-import type { PreviewRegistry } from "./governor-review";
+import { validateHandoff, type HandoffDecision, type HandoffEnvelope, type ValidationRegistries, type ValidationResult } from "./envelope";
 
 /**
  * Allowed handoffs: sender + decision → the only valid recipient
@@ -25,7 +24,7 @@ export function expectedRecipient(sender: AgentRole, decision: HandoffDecision):
 }
 
 /** Full check for an envelope about to be sent: structure plus role order. */
-export function validateOutgoing(input: unknown, options: { previews?: PreviewRegistry } = {}): ValidationResult<HandoffEnvelope> {
+export function validateOutgoing(input: unknown, options: ValidationRegistries = {}): ValidationResult<HandoffEnvelope> {
   const result = validateHandoff(input, options);
   if (!result.ok) return result;
   const { senderRole, decision, recipientRole } = result.value;
@@ -70,8 +69,9 @@ export function canConsume(
   consumer: AgentRole,
   input: unknown,
   actualSenderRole: AgentRole | null,
+  registries: ValidationRegistries = {},
 ): ValidationResult<HandoffEnvelope> {
-  const result = validateOutgoing(input);
+  const result = validateOutgoing(input, registries);
   if (!result.ok) return result;
   const env = result.value;
   if (env.recipientRole !== consumer) {

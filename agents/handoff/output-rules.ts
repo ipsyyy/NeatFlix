@@ -2,6 +2,7 @@ import type { AgentRole } from "@/agents/config/roles";
 import type { HandoffEnvelope } from "./envelope";
 import { NO_PREVIEW_DISCLOSURE, visualClaims } from "./governor-review";
 import { generationClaims, misleadingFrameTerms, STAND_IN_DISCLOSURE } from "./placement-plan";
+import { SOURCE_FRAME_DISCLOSURE } from "./source-frames";
 
 /**
  * Role-specific rules every posted result must meet, enforced at the send
@@ -41,6 +42,7 @@ export const APPROVED_EVIDENCE_SOURCES: Partial<Record<AgentRole, readonly strin
     "nativeframe_get_selected_scene",
     "nativeframe_get_campaign",
     "nativeframe_get_source_artwork",
+    "nativeframe_get_source_frame",
   ],
   "release-governor": ["handoff", "nativeframe_check_placement_plan", "nativeframe_get_preview_status"],
 };
@@ -109,11 +111,16 @@ export function validateResult(envelope: HandoffEnvelope, readable?: string): st
     if (readable !== undefined && envelope.artifact && !/\bnot (yet )?(been )?executed\b/i.test(readable)) {
       errors.push("The readable result must state that the generation prompts have not been executed.");
     }
-    if (readable !== undefined && envelope.artifact && !readable.includes(STAND_IN_DISCLOSURE)) {
-      errors.push(`The readable result must contain exactly: "${STAND_IN_DISCLOSURE}"`);
+    // A plan bound to a registered source frame states that; a stand-in plan states the stand-in.
+    const usesFrame = envelope.artifact?.kind === "placement-plan" && envelope.artifact.sourceMedia.kind === "registered-source-frame";
+    const disclosure = usesFrame ? SOURCE_FRAME_DISCLOSURE : STAND_IN_DISCLOSURE;
+    if (readable !== undefined && envelope.artifact && !readable.includes(disclosure)) {
+      errors.push(`The readable result must contain exactly: "${disclosure}"`);
     }
-    for (const term of misleadingFrameTerms(text)) {
-      errors.push(`Do not call the stand-in a "${term}"; it is approved title artwork, not footage.`);
+    if (!usesFrame) {
+      for (const term of misleadingFrameTerms(text)) {
+        errors.push(`Do not call the stand-in a "${term}"; it is approved title artwork, not footage.`);
+      }
     }
   }
   return errors;

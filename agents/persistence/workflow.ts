@@ -5,6 +5,15 @@ import { isRecordedApproval, type HumanApproval } from "@/agents/handoff/human-a
 import { validatePlacementPlan, type PlacementPlan } from "@/agents/handoff/placement-plan";
 import { validateOutgoing } from "@/agents/handoff/protocol";
 import {
+  FRAME_ASSET_ID,
+  NO_REGISTERED_SOURCE_FRAMES,
+  PRIVATE_STORAGE_REF,
+  type SceneFrameState,
+  type SourceFrameRecord,
+  type SourceFrameRegistry,
+} from "@/agents/handoff/source-frames";
+import { getSceneReview } from "@/data/scene-candidates";
+import {
   DuplicateRecordError,
   MEDIA_KINDS,
   type CaseStatus,
@@ -100,7 +109,7 @@ export class WorkflowRegistry {
 
   /** Persists a validated placement plan. The same plan again is accepted once; a different plan under its ID is refused. */
   async savePlan(input: unknown): Promise<Result<{ planId: string; created: boolean }>> {
-    const errors = validatePlacementPlan(input);
+    const errors = validatePlacementPlan(input, undefined, await this.frameRegistryFor(input));
     if (errors.length > 0) return fail(...errors);
     const plan = input as PlacementPlan;
     const same = async (): Promise<Result<{ planId: string; created: boolean }>> => {
@@ -142,7 +151,7 @@ export class WorkflowRegistry {
   async loadPlan(planId: string): Promise<Result<PlacementPlan>> {
     const row = await this.store.getPlan(planId);
     if (!row) return fail(`No plan is stored under ${planId}.`);
-    const errors = validatePlacementPlan(row.plan, row.case_id);
+    const errors = validatePlacementPlan(row.plan, row.case_id, await this.frameRegistryFor(row.plan));
     if (errors.length > 0) return fail(...errors);
     const plan = row.plan as PlacementPlan;
     if (
@@ -193,6 +202,62 @@ export class WorkflowRegistry {
       throw error;
     }
     return { ok: true, value: { assetId: row.asset_id } };
+  }
+
+  /**
+   * Loads a registered source frame and revalidates its whole provenance chain:
+   * the media row itself, a private storage reference, the registered source
+   * video it cites (same case, same storage reference and checksum), the title
+   * through that video and the case, and an extraction timestamp inside the
+   * recorded scene window. Nothing is trusted from the row alone.
+   */
+  async loadSourceFrame(assetId: string): Promise<Result<SourceFrameRecord>> {
+    if (!FRAME_ASSET_ID.test(assetId)) return fail("Not a source-frame asset ID.");
+    const row = await this.store.getMediaAsset(assetId);
+    if (!row) return fail(`No source frame is registered as ${assetId}.`);
+    const errors = validateMediaRow(row);
+    if (row.kind !== "source-frame") errors.push("Asset is not a source frame.");
+    if (!PRIVATE_STORAGE_REF.test(row.storage_ref)) errors.push("Source frame must use a private storage:// reference.");
+    if (errors.length > 0) return fail(...errors);
+    const prov = row.provenance as Record<string, unknown>;
+    const sourceAssetId = typeof prov.sourceAssetId === "string" ? prov.sourceAssetId : "";
+    const sceneId = typeof prov.sceneId === "string" ? prov.sceneId : "";
+    const timestampSeconds = prov.timestampSeconds;
+    if (!sourceAssetId || !sceneId || typeof timestampSeconds !== "number" || !Number.isFinite(timestampSeconds)) {
+      return fail("Source frame provenance must cite sourceAssetId, sceneId, and timestampSeconds.");
+    }
+    const source = await this.store.getMediaAsset(sourceAssetId);
+    if (!source || source.kind !== "source-video" || validateMediaRow(source).length > 0) return fail("Source frame cites a missing or invalid source video.");
+    if (source.case_id !== row.case_id) return fail("Source frame and its source video belong to different cases.");
+    if (prov.sourceStorageRef !== source.storage_ref || prov.sourceChecksum !== source.checksum) return fail("Source frame provenance does not match its registered source video.");
+    const titleId = (source.provenance as Record<string, unknown>).titleId;
+    const caseRow = await this.store.getCase(row.case_id);
+    if (typeof titleId !== "string" || !caseRow || caseRow.title_id !== titleId) return fail("Source frame's title does not match its case.");
+    const scene = getSceneReview(titleId)?.scenes.find((s) => s.id === sceneId);
+    if (!scene) return fail("Source frame cites a scene that is not recorded for its title.");
+    if (timestampSeconds < scene.startSeconds || timestampSeconds > scene.endSeconds) return fail("Source frame timestamp is outside its scene window.");
+    return {
+      ok: true,
+      value: { assetId, caseId: row.case_id, titleId, sceneId, sourceAssetId, timestampSeconds, storageRef: row.storage_ref, checksum: row.checksum, mimeType: row.mime_type },
+    };
+  }
+
+  /** A scene's registered frames: exactly one valid frame, invalid (any frame fails, or several), or none. */
+  async loadSourceFramesForScene(caseId: string, sceneId: string): Promise<SceneFrameState> {
+    const rows = (await this.store.listMediaAssetsForCase(caseId, "source-frame")).filter(
+      (r) => (r.provenance as Record<string, unknown> | null)?.sceneId === sceneId,
+    );
+    if (rows.length === 0) return { valid: null, invalid: false };
+    const loaded = await Promise.all(rows.map((r) => this.loadSourceFrame(r.asset_id)));
+    const valid = loaded.filter((r) => r.ok).map((r) => (r as { ok: true; value: SourceFrameRecord }).value);
+    if (valid.length !== 1 || loaded.some((r) => !r.ok)) return { valid: null, invalid: true };
+    return { valid: valid[0], invalid: false };
+  }
+
+  /** A one-scene registry snapshot for validating a stored or incoming plan. */
+  private async frameRegistryFor(plan: unknown): Promise<SourceFrameRegistry> {
+    if (!isObj(plan) || typeof plan.caseId !== "string" || !isObj(plan.scene) || typeof plan.scene.sceneId !== "string") return NO_REGISTERED_SOURCE_FRAMES;
+    return staticFrameRegistry(plan.caseId, plan.scene.sceneId, await this.loadSourceFramesForScene(plan.caseId, plan.scene.sceneId));
   }
 
   /** The newest generated preview for a plan that revalidates, or why none does. */
@@ -306,6 +371,15 @@ function toPreviewRecord(row: MediaAssetRow): PreviewRecord & { assetId: string 
     provenance: { generator: row.generator!, generatedAt, inputPlanId: row.plan_id! },
     generationMetadata: { model: row.model!, latencyMs: row.latency_ms!, costUsd: Number(row.cost_usd) },
   };
+}
+
+/** A read-only frame registry for one scene's already-revalidated state. */
+export function staticFrameRegistry(caseId: string, sceneId: string, state: SceneFrameState): SourceFrameRegistry {
+  const frozen = structuredClone(state);
+  return Object.freeze({
+    find: (assetId: string) => (frozen.valid && frozen.valid.assetId === assetId ? structuredClone(frozen.valid) : null),
+    forScene: (c: string, s: string) => (c === caseId && s === sceneId ? structuredClone(frozen) : null),
+  });
 }
 
 /** A read-only registry holding at most one already-validated preview. */

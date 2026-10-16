@@ -98,6 +98,13 @@ export class MemoryWorkflowStore implements WorkflowStore {
       .map((m) => structuredClone(m));
   }
 
+  async listMediaAssetsForCase(caseId: string, kind: MediaKind): Promise<MediaAssetRow[]> {
+    return [...this.media.values()]
+      .filter((m) => m.case_id === caseId && m.kind === kind)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map((m) => structuredClone(m));
+  }
+
   async insertReview(row: NewReview): Promise<void> {
     if (this.reviews.has(row.review_id)) throw new DuplicateRecordError("governor_reviews");
     if (this.plans.get(row.plan_id)?.case_id !== row.case_id) throw new IntegrityError("governor_reviews", "no plan with this plan_id and case_id");

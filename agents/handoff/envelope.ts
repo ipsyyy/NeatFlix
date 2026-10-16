@@ -1,6 +1,10 @@
 import { HUMAN_REVIEWER, isAgentRole, type AgentRole, type HandoffParty } from "@/agents/config/roles";
 import { NO_GENERATED_PREVIEWS, validateGovernorReview, type GovernorReview, type PreviewRegistry } from "./governor-review";
 import { validatePlacementPlan, type PlacementPlan } from "./placement-plan";
+import type { SourceFrameRegistry } from "./source-frames";
+
+/** Registries validation may consult: generated previews (approvals) and registered source frames (plans). */
+export type ValidationRegistries = { previews?: PreviewRegistry; frames?: SourceFrameRegistry };
 
 /**
  * Decisions each role may make. Advancing decisions move the case forward;
@@ -71,7 +75,7 @@ function isParty(value: unknown): value is HandoffParty {
  */
 export function validateHandoff(
   input: unknown,
-  options: { previews?: PreviewRegistry } = {},
+  options: ValidationRegistries = {},
 ): ValidationResult<HandoffEnvelope> {
   const errors: string[] = [];
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -132,7 +136,7 @@ export function validateHandoff(
 
   const caseId = typeof h.caseId === "string" ? h.caseId : undefined;
   if ("artifact" in h) {
-    if (h.senderRole === "placement-director") errors.push(...validatePlacementPlan(h.artifact, caseId));
+    if (h.senderRole === "placement-director") errors.push(...validatePlacementPlan(h.artifact, caseId, options.frames));
     else if (h.senderRole === "release-governor") {
       errors.push(
         ...validateGovernorReview(

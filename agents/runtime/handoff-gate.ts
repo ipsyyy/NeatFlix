@@ -3,11 +3,29 @@ import { DefaultPreprocessor, HistoryProvider } from "@band-ai/sdk/runtime";
 import type { AgentRole } from "@/agents/config/roles";
 import { ACCEPTED_INPUTS, canConsume, extractHandoffs } from "@/agents/handoff/protocol";
 import { checkHandoffTimestamp } from "@/agents/handoff/timestamps";
-import type { HandoffEnvelope } from "@/agents/handoff/envelope";
+import type { HandoffEnvelope, ValidationRegistries } from "@/agents/handoff/envelope";
+import type { RefreshableSourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "./accepted-plans";
 
 /** Release Governor stores the gate fills: accepted plans, and previews revalidated for them. */
-export type GovernorIntake = { plans?: AcceptedPlanRegistry; previews?: { refresh(planId: string): Promise<unknown> } };
+export type GovernorIntake = {
+  plans?: AcceptedPlanRegistry;
+  previews?: { refresh(planId: string): Promise<unknown> };
+  /** Registered source frames, refreshed for the handoff's scene before it is screened. */
+  frames?: RefreshableSourceFrameRegistry;
+};
+
+/** The case and scene a handoff concerns: a placement plan's scene, a match's scene, or a review's subject. */
+function handoffScene(value: unknown): { caseId: string; sceneId: string } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const h = value as Record<string, unknown>;
+  if (typeof h.caseId !== "string") return null;
+  const artifact = h.artifact as Record<string, unknown> | undefined;
+  const fromArtifact = (artifact?.scene as Record<string, unknown> | undefined)?.sceneId ?? (artifact?.subject as Record<string, unknown> | undefined)?.sceneId;
+  if (typeof fromArtifact === "string") return { caseId: h.caseId, sceneId: fromArtifact };
+  const match = typeof h.artifactId === "string" ? /^match:[a-z0-9-]+:([a-z0-9-]+)$/.exec(h.artifactId) : null;
+  return match ? { caseId: h.caseId, sceneId: match[1] } : null;
+}
 
 type DefaultProcess = DefaultPreprocessor["process"];
 
@@ -44,6 +62,7 @@ export function screenIncomingMessage(
   content: string,
   sender: MessageSender,
   clock: MessageClock = { now: new Date() },
+  registries: ValidationRegistries = {},
 ): ScreenResult {
   if (sender.role === consumer) return reject("Agents do not consume their own messages.");
 
@@ -69,7 +88,7 @@ export function screenIncomingMessage(
   if (!block.ok) return reject(block.error);
   const stamp = checkHandoffTimestamp((block.value as { timestamp?: unknown } | null)?.timestamp, clock);
   if (!stamp.ok) return reject(stamp.reason);
-  const result = canConsume(consumer, block.value, sender.role);
+  const result = canConsume(consumer, block.value, sender.role, registries);
   return result.ok
     ? { consume: true, handoffTimestamp: stamp.timestamp, timestampSkewMs: stamp.skewMs }
     : reject(...result.errors);
@@ -111,10 +130,19 @@ export class HandoffGate {
       role: this.roleByAgentId.get(message.senderId) ?? null,
       type: message.senderType,
     };
-    const screen = screenIncomingMessage(this.consumer, message.content, sender, {
-      now: new Date(),
-      postedAt: message.createdAt,
-    });
+    // Load the scene's registered source frames first, so plans naming a frame can be checked.
+    if (this.intake.frames) {
+      const [block] = extractHandoffs(message.content);
+      const target = block?.ok ? handoffScene(block.value) : null;
+      if (target) await this.intake.frames.refreshScene(target.caseId, target.sceneId);
+    }
+    const screen = screenIncomingMessage(
+      this.consumer,
+      message.content,
+      sender,
+      { now: new Date(), postedAt: message.createdAt },
+      { frames: this.intake.frames },
+    );
     if (!screen.consume) {
       this.logger.warn("Rejected message at handoff boundary", {
         room: message.roomId,

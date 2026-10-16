@@ -200,6 +200,7 @@ describe("Placement Director evidence tools and isolation", () => {
       "nativeframe_get_campaign",
       "nativeframe_get_selected_scene",
       "nativeframe_get_source_artwork",
+      "nativeframe_get_source_frame",
       "nativeframe_validate_handoff",
     ]);
   });
@@ -290,7 +291,7 @@ describe("Placement Director uses only the current catalogue record", () => {
     assert.ok(validatePlacementPlan(retiredScene).some((e) => /recorded scene/.test(e)));
     const retiredTitle = plan({ sourceArtifacts: { ...base.sourceArtifacts, titleId: "hate-hypothesis" } });
     assert.ok(validatePlacementPlan(retiredTitle).some((e) => /recorded scene/.test(e)));
-    const retiredArtwork = plan({ sourceMedia: { ...base.sourceMedia, src: "/artwork/the-hate-hypothesis-hero.png" } });
+    const retiredArtwork = plan({ sourceMedia: { ...base.sourceMedia, src: "/artwork/the-hate-hypothesis-hero.png" } as PlacementPlan["sourceMedia"] });
     assert.ok(validatePlacementPlan(retiredArtwork).some((e) => /approved title artwork/.test(e)));
   });
 
