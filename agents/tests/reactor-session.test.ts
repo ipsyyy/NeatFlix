@@ -24,6 +24,12 @@ type Scenario = {
   hang?: string;
   /** Acknowledge set_resolution with a different resolution. */
   ackResolution?: string;
+  /**
+   * How start is acknowledged: a direct reply plus the broadcast (documented "Both", the default),
+   * a blank reply then the broadcast, a blank reply and nothing, an SDK-reported refusal, a
+   * conflicting broadcast, an unconditioned broadcast, or a later conflicting state.
+   */
+  start?: "direct" | "blank-broadcast" | "blank-none" | "refuse" | "conflict" | "unconditioned" | "state-conflict";
 };
 
 /** A fake Reactor client that follows the documented Visko Orbis Stable protocol. */
@@ -122,10 +128,21 @@ class FakeReactor implements ReactorLike {
           this.message("state", { available_resolutions: ["1080p"], seed: 42, has_image: true, has_prompt: true });
         });
         return { type: "prompt_accepted", data: { prompt: this.s.echo ?? data.prompt } };
-      case "start":
+      case "start": {
+        const ack = { fps: 18, width: 832, height: 480, max_chunks: 2000, resolution: "1080p", audio_enabled: true, frames_per_chunk: 33, image_conditioned: true };
+        const mode = this.s.start ?? "direct";
+        if (mode === "refuse") {
+          this.emit("error", { operation: "sendCommand", code: "CONFLICT", message: "command 'start' failed (CONFLICT): refused" });
+          return undefined;
+        }
+        if (mode === "blank-none") return undefined;
         this.generating = true;
         this.nextChunk();
-        return { type: "generation_started", data: { fps: 18, width: 832, height: 480, max_chunks: 2000, resolution: "1080p", audio_enabled: true, frames_per_chunk: 33, image_conditioned: true } };
+        const broadcast = mode === "conflict" ? { ...ack, resolution: "2k" } : mode === "unconditioned" ? { ...ack, image_conditioned: false } : ack;
+        setTimeout(() => this.message("generation_started", broadcast), 1);
+        if (mode === "state-conflict") setTimeout(() => this.message("state", { resolution: "4k", started: true, running: true }), 1);
+        return mode === "blank-broadcast" || mode === "unconditioned" ? undefined : { type: "generation_started", data: ack };
+      }
       case "pause":
         this.paused = true;
         if (this.s.ignorePause) return { type: "generation_paused", data: { chunk_index: this.chunk } };
@@ -263,6 +280,55 @@ describe("Orbis session: one bounded run", () => {
     assert.equal(outcome.ok, false);
     assert.equal((outcome as { stage: string }).stage, "conditions");
     assert.equal(fake.calls.includes("start"), false);
+  });
+
+  it("accepts a blank start reply acknowledged by the generation_started broadcast", async () => {
+    const { fake, outcome } = await run({ initialState: false, start: "blank-broadcast" });
+    assert.ok(outcome.ok, JSON.stringify(outcome));
+    assert.equal(outcome.startAcknowledgedBy, "broadcast");
+    assert.equal(fake.commands.filter((c) => c.name === "start").length, 1, "start is sent once");
+    assert.deepEqual(outcome.chunks.map((c) => c.framesEmitted), [0, 33, 33]);
+  });
+
+  it("records a direct start reply as the acknowledgement when one arrives", async () => {
+    const { outcome } = await run({ initialState: false });
+    assert.ok(outcome.ok);
+    assert.equal(outcome.startAcknowledgedBy, "direct reply");
+  });
+
+  it("fails closed on an SDK-reported start refusal, without waiting or retrying", async () => {
+    const { fake, outcome } = await run({ initialState: false, start: "refuse" });
+    assert.equal(outcome.ok, false);
+    assert.equal((outcome as { stage: string }).stage, "start");
+    assert.match((outcome as { error: string }).error, /refused \(CONFLICT\)/);
+    assert.equal(fake.commands.filter((c) => c.name === "start").length, 1);
+    assert.equal(fake.calls.includes("pause"), false);
+    assert.deepEqual(fake.disconnects, [false]);
+  });
+
+  it("fails closed when a blank start reply is followed by no broadcast within the bound", async () => {
+    const { fake, outcome } = await run({ initialState: false, start: "blank-none" }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    assert.equal(outcome.ok, false);
+    assert.match((outcome as { error: string }).error, /Timed out waiting for the generation_started broadcast/);
+    assert.equal(fake.commands.filter((c) => c.name === "start").length, 1, "no second start");
+    assert.equal(outcome.startAcknowledgedBy, null);
+  });
+
+  it("fails closed when start never replies at all", async () => {
+    const { fake, outcome } = await run({ initialState: false, hang: "start" }, { timeouts: { connectMs: 2000, commandMs: 60, generationMs: 2000, clipMs: 2000, downloadMs: 2000 } });
+    assert.equal(outcome.ok, false);
+    assert.match((outcome as { error: string }).error, /Timed out waiting for the start reply/);
+    assert.equal(fake.commands.filter((c) => c.name === "start").length, 1);
+  });
+
+  it("fails closed on a conflicting acknowledgement, an unconditioned start, or a conflicting state", async () => {
+    for (const start of ["conflict", "unconditioned", "state-conflict"] as const) {
+      const { fake, outcome } = await run({ initialState: false, start });
+      assert.equal(outcome.ok, false, start);
+      assert.equal((outcome as { stage: string }).stage, "start", start);
+      assert.equal(fake.calls.includes("requestClip"), false, `${start}: nothing captured`);
+      assert.deepEqual(fake.disconnects, [false]);
+    }
   });
 
   it("never reconnects when the connection drops", async () => {

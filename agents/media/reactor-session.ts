@@ -10,7 +10,9 @@
  * by its documented reply (resolution_accepted) or failing on its documented
  * rejection naming the offered list (no unsolicited state snapshot is awaited)
  * → set_seed → uploadFile → set_image → set_prompt
- * (passthrough) → start → pause after the first frame-bearing chunk, so the
+ * (passthrough) → start, acknowledged by its direct generation_started reply
+ * or, when the direct reply is blank and no refusal was reported, by a bounded
+ * generation_started broadcast (the schema delivers it both ways) → pause after the first frame-bearing chunk, so the
  * run stops after exactly two frame-bearing chunks (the first chunk is a
  * zero-frame warm-up per the prompt guide's runtime caveats) → requestClip
  * covering only the frame-bearing chunks → downloadClipAsFile → disconnect.
@@ -66,6 +68,8 @@ export type SessionReport = {
   moderation: unknown[];
   /** How the delivery resolution was confirmed, or why it could not be. */
   resolution: { confirmedBy: "set_resolution reply" } | { rejected: string; offered: string[] } | null;
+  /** How start was acknowledged: its direct reply, or the generation_started broadcast after a blank reply. */
+  startAcknowledgedBy: "direct reply" | "broadcast" | null;
   /** Seconds of video the model reported generating (frames emitted / fps). */
   generatedSeconds: number;
   timings: { connectStartMs: number; readyMs: number | null; startMs: number | null; pausedMs: number | null; disconnectedMs: number | null };
@@ -101,6 +105,7 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     generation: null,
     moderation: [],
     resolution: null,
+    startAcknowledgedBy: null,
     generatedSeconds: 0,
     timings: { connectStartMs: now(), readyMs: null, startMs: null, pausedMs: null, disconnectedMs: null },
   };
@@ -114,6 +119,12 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
     changed();
   };
   let latestState: Record<string, unknown> | null = null as Record<string, unknown> | null;
+  // generation_started broadcasts and SDK command errors seen after start was sent.
+  let startSent = false;
+  const startedBroadcasts: Record<string, unknown>[] = [];
+  const commandErrorsAfterStart: string[] = [];
+  let acknowledged: Record<string, unknown> | null = null;
+  const conflicts = (b: Record<string, unknown>) => !!acknowledged && (b.image_conditioned !== acknowledged.image_conditioned || b.resolution !== acknowledged.resolution);
   let conditions: Record<string, unknown> | null = null;
   let finished = false;
 
@@ -158,8 +169,14 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
   reactor.on("message", ((msg: SdkMessage) => {
     const data = isObj(msg?.data) ? msg.data : {};
     switch (msg?.type) {
+      case "generation_started":
+        if (!startSent) return fail("start", "generation_started arrived before start was sent.");
+        startedBroadcasts.push(data);
+        if (conflicts(data)) return fail("start", "Conflicting generation_started acknowledgements.");
+        break;
       case "state":
         latestState = data;
+        if (acknowledged && typeof data.resolution === "string" && data.resolution !== p.resolution) return fail("start", "The session state conflicts with the confirmed resolution.");
         break;
       case "conditions_ready":
         conditions = data;
@@ -191,6 +208,13 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
         break;
     }
     changed();
+  }) as never);
+  // Documented: a refused command resolves undefined, and the SDK's error event fires (operation "sendCommand") before it resolves.
+  reactor.on("error", ((e: { operation?: unknown; code?: unknown }) => {
+    if (startSent && e?.operation === "sendCommand") {
+      commandErrorsAfterStart.push(String(e.code ?? "error").slice(0, 40));
+      changed();
+    }
   }) as never);
   reactor.on("runtimeMessage", ((msg: SdkMessage) => {
     if (msg?.type === "moderation") {
@@ -235,7 +259,27 @@ export async function runOrbisSession(reactor: ReactorLike, p: SessionParams, no
 
     // Exactly one start; the prompt is never changed afterwards.
     report.timings.startMs = now();
-    const started = await command("start", {}, "generation_started", "start");
+    startSent = true;
+    report.commandsSent.push("start");
+    const reply = await bounded(reactor.sendCommand("start", {}), p.timeouts.commandMs, "start", "the start reply");
+    if (failure) throw failure;
+    let started: Record<string, unknown>;
+    if (reply) {
+      if (reply.type !== "generation_started" || !isObj(reply.data)) throw new SessionFailure("start", `start replied ${String(reply.type).slice(0, 40)}, expected generation_started.`);
+      started = reply.data;
+      report.startAcknowledgedBy = "direct reply";
+    } else {
+      // A blank reply is a refusal only if the SDK reported one; otherwise wait, bounded, for the broadcast.
+      if (commandErrorsAfterStart.length > 0) throw new SessionFailure("start", `start was refused (${commandErrorsAfterStart[0]}).`);
+      await until(() => startedBroadcasts.length > 0 || commandErrorsAfterStart.length > 0, p.timeouts.commandMs, "start", "the generation_started broadcast");
+      if (commandErrorsAfterStart.length > 0) throw new SessionFailure("start", `start was refused (${commandErrorsAfterStart[0]}).`);
+      started = startedBroadcasts[0];
+      report.startAcknowledgedBy = "broadcast";
+    }
+    // Every acknowledgement, now or later, must agree: one conflicting broadcast fails the run.
+    acknowledged = started;
+    if (startedBroadcasts.some(conflicts)) throw new SessionFailure("start", "Conflicting generation_started acknowledgements.");
+    if (commandErrorsAfterStart.length > 0) throw new SessionFailure("start", `An SDK command error was reported after start (${commandErrorsAfterStart[0]}).`);
     report.generation = started;
     if (started.image_conditioned !== true) throw new SessionFailure("start", "Generation did not start from the approved image.");
     if (started.resolution !== p.resolution) throw new SessionFailure("start", "Generation started at a different resolution.");
