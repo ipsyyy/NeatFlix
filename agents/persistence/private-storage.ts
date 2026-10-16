@@ -3,14 +3,28 @@ import { SECRET_KEY_FORMAT, SUPABASE_SECRET_KEY_ENV, SUPABASE_URL_ENV } from "./
 
 /**
  * Server-only private object storage for media. Objects are addressed only by
- * private storage:// references. Uploads never overwrite, and no public or
- * signed URL is ever created. Never import from app/, components/, or lib/.
+ * private storage:// references. Uploads never overwrite, and no public URL is
+ * ever created. The single exception to "no signed URL" is
+ * createPortraitHandoffUrl: a 5-minute read URL for an agent portrait
+ * NativeFrame rendered itself, so Masky can fetch it once when an avatar is
+ * created. That URL is never logged or stored. Never import from app/,
+ * components/, or lib/.
  */
 export interface PrivateStorage {
   /** The object's bytes, or null when no object exists at the reference. */
   download(storageRef: string): Promise<Uint8Array | null>;
   /** Uploads with overwrite disabled: "exists" when an object is already there (nothing is changed). */
   uploadNew(storageRef: string, bytes: Uint8Array, mimeType: string): Promise<"created" | "exists">;
+}
+
+/** The only objects a short-lived handoff URL may be created for, and its lifetime. */
+export const PORTRAIT_HANDOFF_PREFIX = "storage://nf-media/agents/portraits/";
+export const PORTRAIT_HANDOFF_TTL_SECONDS = 300;
+export const isPortraitHandoffRef = (ref: string) => ref.startsWith(PORTRAIT_HANDOFF_PREFIX) && /^[a-z0-9-]+\.png$/.test(ref.slice(PORTRAIT_HANDOFF_PREFIX.length));
+
+/** Storage that can also hand one agent portrait to a provider for a few minutes. */
+export interface PortraitHandoffStorage extends PrivateStorage {
+  createPortraitHandoffUrl(storageRef: string): Promise<string>;
 }
 
 /** Splits storage://<bucket>/<path> after validating it as a private reference. */
@@ -22,7 +36,7 @@ export function parseStorageRef(storageRef: string): { bucket: string; path: str
 }
 
 /** Supabase Storage through its REST API with the server-only secret key (apikey header only). */
-export class SupabasePrivateStorage implements PrivateStorage {
+export class SupabasePrivateStorage implements PortraitHandoffStorage {
   private readonly base: string;
 
   constructor(
@@ -48,6 +62,21 @@ export class SupabasePrivateStorage implements PrivateStorage {
     const body = (await res.json().catch(() => ({}))) as { statusCode?: unknown; error?: unknown };
     if (res.status === 404 || String(body.statusCode) === "404" || /not.?found/i.test(String(body.error ?? ""))) return null;
     throw new Error(`Private storage download failed with HTTP ${res.status}.`);
+  }
+
+  /** A 5-minute signed read URL, only for an agent portrait (see the module comment). Never log or store it. */
+  async createPortraitHandoffUrl(storageRef: string): Promise<string> {
+    if (!isPortraitHandoffRef(storageRef)) throw new Error("Only an agent portrait may be handed off.");
+    const { bucket, path } = parseStorageRef(storageRef);
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    const res = await this.fetchImpl(`${this.base}/object/sign/${bucket}/${encoded}`, {
+      method: "POST",
+      headers: { apikey: this.secretKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ expiresIn: PORTRAIT_HANDOFF_TTL_SECONDS }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { signedURL?: unknown };
+    if (!res.ok || typeof body.signedURL !== "string" || !body.signedURL.startsWith("/")) throw new Error(`Portrait handoff URL failed with HTTP ${res.status}.`);
+    return `${this.base}${body.signedURL}`;
   }
 
   async uploadNew(storageRef: string, bytes: Uint8Array, mimeType: string): Promise<"created" | "exists"> {
