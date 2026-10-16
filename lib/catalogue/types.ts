@@ -77,7 +77,10 @@ export type CatalogueTitle = {
   actorRestriction: ActorRestrictionStatus;
   contentSensitivity: ContentSensitivity;
   processingStatus: ProcessingStatus;
-  /** Runtime in seconds; must be between 180 and 300 (3–5 minutes). */
+  /**
+   * Runtime in seconds; between 180 and 300 (3–5 minutes), or exactly the
+   * whole-second runtime of an approved source clip for a pipeline title (§3).
+   */
   durationSeconds: number;
   artwork: ArtworkRef;
   /** Object-storage URL, or null until the video is uploaded. */

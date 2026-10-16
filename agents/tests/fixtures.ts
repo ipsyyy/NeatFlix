@@ -113,13 +113,13 @@ export function validPlacementPlan(overrides: Partial<PlacementPlan> = {}): Plac
       sceneArtifactId: "scene:luv-scene-1",
       titleId: "luv-hypothesis",
     },
-    scene: { sceneId: "luv-scene-1", name: "Lab desk discussion", startSeconds: 42, endSeconds: 47 },
+    scene: { sceneId: "luv-scene-1", name: "Café table conversation", startSeconds: 7, endSeconds: 10 },
     product: { campaignId: "daybreak-cold-brew", product: "Daybreak Cold Brew", format: "Branded takeaway coffee cup" },
     placement: {
-      region: "visible lab desk",
+      region: "visible café table",
       motion: "stationary",
       handInteraction: "none",
-      description: "One Daybreak Cold Brew branded takeaway coffee cup rests upright on the visible lab desk, clear of both actors.",
+      description: "One Daybreak Cold Brew branded takeaway coffee cup rests upright on the clear front-right area of the visible café table, away from the existing cups, the pastry, and both actors.",
     },
     guidance: {
       scale: "Match a real 16 oz takeaway cup relative to the desk and notebook.",
@@ -146,14 +146,14 @@ export function validPlacementPlan(overrides: Partial<PlacementPlan> = {}): Plac
         target: "gemini-nano-banana",
         status: "not-executed",
         label: "Generation instruction — not yet executed",
-        prompt: "Insert one Daybreak Cold Brew branded takeaway coffee cup standing on the visible lab desk. No hand interaction. Keep everything else unchanged.",
+        prompt: "Insert one Daybreak Cold Brew branded takeaway coffee cup standing on the clear front-right area of the visible café table. No hand interaction. Keep everything else unchanged.",
       },
       motion: {
         target: "reactor",
         status: "not-executed",
         label: "Generation instruction — not yet executed",
-        durationSeconds: 5,
-        prompt: "Animate the scene for 5 seconds with the cup stationary on the desk. No hand interaction and no camera movement.",
+        durationSeconds: 3,
+        prompt: "Animate the scene for 3 seconds with the cup stationary on the table. No hand interaction and no camera movement.",
       },
     },
     sourceMedia: {
@@ -164,7 +164,7 @@ export function validPlacementPlan(overrides: Partial<PlacementPlan> = {}): Plac
     },
     assumptions: ["No video exists yet; the approved title artwork is a stand-in."],
     blockers: [],
-    evidence: [{ claim: "The lab desk is clear and in frame.", source: "nativeframe_get_selected_scene.scene.surface" }],
+    evidence: [{ claim: "The front-right café table area is clear and in frame.", source: "nativeframe_get_selected_scene.scene.surface" }],
     ...overrides,
   };
 }

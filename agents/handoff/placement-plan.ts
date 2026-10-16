@@ -10,7 +10,7 @@ import type { EvidenceItem } from "./envelope";
  * not been executed.
  */
 
-export const PLACEMENT_REGION = "visible lab desk";
+export const PLACEMENT_REGION = "visible café table";
 export const PROMPT_NOT_EXECUTED_LABEL = "Generation instruction — not yet executed";
 export const MOTION_MIN_SECONDS = 3;
 export const MOTION_MAX_SECONDS = 5;
@@ -165,7 +165,7 @@ export function validatePlacementPlan(input: unknown, expectedCaseId?: string): 
     if (scene.startSeconds !== recorded.startSeconds || scene.endSeconds !== recorded.endSeconds) {
       e.push(`artifact.scene window must be the recorded ${recorded.startSeconds}–${recorded.endSeconds} s.`);
     }
-    if (!/lab desk/i.test(recorded.surface)) e.push("The recorded scene has no lab desk surface.");
+    if (!/caf[eé] table/i.test(recorded.surface)) e.push("The recorded scene has no café table surface.");
   }
 
   // Product must be the recorded campaign product and format.

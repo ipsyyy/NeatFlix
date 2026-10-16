@@ -11,6 +11,13 @@ import type { CatalogueTitle } from "@/lib/catalogue/types";
 
 const MIN_DURATION_SECONDS = 180;
 const MAX_DURATION_SECONDS = 300;
+
+/**
+ * Pipeline-enabled titles represented by a shorter approved synthetic source
+ * clip (§3), with the clip's runtime in whole seconds. The LUV clip is the
+ * registered asset asset:luv-hypothesis:source-video:v1 (20.064 s).
+ */
+const APPROVED_SOURCE_CLIP_SECONDS: Readonly<Record<string, number>> = { "luv-hypothesis": 20 };
 const EXPECTED_TITLE_COUNT = 10;
 const MAX_PIPELINE_TITLES = 2;
 
@@ -25,7 +32,12 @@ function defineCatalogue(titles: CatalogueTitle[]): readonly CatalogueTitle[] {
   for (const t of titles) {
     if (ids.has(t.id)) throw new Error(`Duplicate catalogue id: ${t.id}`);
     ids.add(t.id);
-    if (
+    const clipSeconds = APPROVED_SOURCE_CLIP_SECONDS[t.id];
+    if (clipSeconds !== undefined) {
+      if (!t.pipelineEnabled || t.durationSeconds !== clipSeconds) {
+        throw new Error(`${t.id} must be pipeline enabled and run exactly its approved ${clipSeconds}s source clip.`);
+      }
+    } else if (
       t.durationSeconds < MIN_DURATION_SECONDS ||
       t.durationSeconds > MAX_DURATION_SECONDS
     ) {
@@ -84,7 +96,8 @@ export const catalogue = defineCatalogue([
     actorRestriction: "none",
     contentSensitivity: { level: "standard" },
     processingStatus: "review-ready",
-    durationSeconds: 248,
+    // Registered source clip asset:luv-hypothesis:source-video:v1 runs 20.064 s.
+    durationSeconds: 20,
     artwork: {
       kind: "image",
       src: "/artwork/the-luv-hypothesis-hero.png",

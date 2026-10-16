@@ -30,7 +30,7 @@ const pdHandoff = (over: Partial<HandoffEnvelope> = {}) =>
     recipientRole: "release-governor",
     decision: "instructions-ready",
     artifactId: PLAN_ID,
-    evidence: [{ claim: "The lab desk is clear.", source: "nativeframe_get_selected_scene.scene.surface" }],
+    evidence: [{ claim: "The front-right café table area is clear.", source: "nativeframe_get_selected_scene.scene.surface" }],
     artifact: validPlacementPlan(),
     ...over,
   });

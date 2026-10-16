@@ -32,7 +32,7 @@ The demonstration uses a fictional streaming company, fictional advertisers, syn
 
 The catalogue contains:
 
-- Ten shows, each represented by a 3–5 minute video
+- Ten shows, each represented by a 3–5 minute video. A pipeline-enabled title may instead be represented by a shorter approved synthetic source clip; its catalogue runtime then matches that clip in whole seconds, and every scene window lies inside it.
 - A mixture of light comedy and romance titles suitable for placement, plus darker or higher-risk titles that exercise eligibility and brand-safety rejection
 - Ownership, genre, tone, rating, actor-restriction, and placement metadata
 - Three to five candidate scenes across the catalogue

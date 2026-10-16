@@ -26,7 +26,7 @@ function pdHandoff(plan: unknown = validPlacementPlan(), over: Partial<HandoffEn
     artifactId: "plan:daybreak-cold-brew:luv-scene-1:v1",
     evidence: [
       { claim: "Daybreak Cold Brew was recommended for luv-scene-1.", source: "handoff.decision" },
-      { claim: "The lab desk is clear and in frame.", source: "nativeframe_get_selected_scene.scene.surface" },
+      { claim: "The front-right café table area is clear and in frame.", source: "nativeframe_get_selected_scene.scene.surface" },
     ],
     nextAction: "Review the placement plan before any generation step.",
     artifact: plan as PlacementPlan,
@@ -35,7 +35,7 @@ function pdHandoff(plan: unknown = validPlacementPlan(), over: Partial<HandoffEn
 }
 
 const readable =
-  `@ipchoudhury Placement plan for Daybreak Cold Brew on the visible lab desk in luv-scene-1 (00:42–00:47). ` +
+  `@ipchoudhury Placement plan for Daybreak Cold Brew on the visible café table in luv-scene-1 (00:07–00:10). ` +
   `Both generation prompts have not been executed. ${STAND_IN_DISCLOSURE} ${RELEASE_GOVERNOR_DISCLOSURE}`;
 const message = (env: HandoffEnvelope, text = readable) => `${text}\n\n${formatHandoffBlock(env)}`;
 const plan = (over: Partial<PlacementPlan>) => validPlacementPlan(over);
@@ -58,8 +58,8 @@ describe("placement plan: valid plan", () => {
 
 describe("placement plan: rejections", () => {
   it("rejects the wrong surface", () => {
-    assert.ok(validatePlacementPlan(plan({ placement: { ...base.placement, region: "café table" } })).some((e) => /region/.test(e)));
-    assert.ok(validatePlacementPlan(plan({ scene: { ...base.scene, sceneId: "luv-scene-2", name: "Campus café conversation", startSeconds: 78, endSeconds: 83 } })).some((e) => /lab desk/.test(e)));
+    assert.ok(validatePlacementPlan(plan({ placement: { ...base.placement, region: "visible lab desk" } })).some((e) => /region/.test(e)));
+    assert.ok(validatePlacementPlan(plan({ scene: { ...base.scene, sceneId: "luv-scene-2", name: "Counter two-shot", startSeconds: 5, endSeconds: 6 } })).some((e) => /café table/.test(e)));
   });
 
   it("rejects hand interaction", () => {
@@ -93,12 +93,12 @@ describe("placement plan: rejections", () => {
   });
 
   it("rejects unsupported durations", () => {
-    for (const durationSeconds of [2, 6, 10]) {
+    for (const durationSeconds of [2, 4, 6]) {
       const bad = plan({ prompts: { ...base.prompts, motion: { ...base.prompts.motion, durationSeconds } } });
       assert.ok(validatePlacementPlan(bad).some((e) => /durationSeconds/.test(e)), String(durationSeconds));
     }
-    const window = plan({ scene: { ...base.scene, startSeconds: 40, endSeconds: 50 } });
-    assert.ok(validatePlacementPlan(window).some((e) => /recorded 42–47/.test(e)));
+    const window = plan({ scene: { ...base.scene, startSeconds: 6, endSeconds: 11 } });
+    assert.ok(validatePlacementPlan(window).some((e) => /recorded 7–10/.test(e)));
   });
 
   it("rejects false claims that generation occurred", () => {

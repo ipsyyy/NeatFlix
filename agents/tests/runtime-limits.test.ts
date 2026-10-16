@@ -48,7 +48,7 @@ describe("validator reports every problem in one response", () => {
       recipientRole: "release-governor",
       decision: "instructions-ready",
       artifactId: "plan:daybreak-cold-brew:luv-scene-1:v1",
-      evidence: [{ claim: "The lab desk is clear.", source: "nativeframe_get_selected_scene.scene.surface" }],
+      evidence: [{ claim: "The front-right café table area is clear.", source: "nativeframe_get_selected_scene.scene.surface" }],
       artifact: plan,
       ...over,
     });

@@ -45,7 +45,7 @@ describe("evidence tools", () => {
     assert.ok(result.eligibility.reasons.some((r) => /brand-safety/i.test(r)));
   });
 
-  it("returns the recorded scene candidates, including the Lab desk discussion", async () => {
+  it("returns the recorded scene candidates, including the café table conversation", async () => {
     const result = (await tool("scene-scout", "nativeframe_get_scene_candidates").handler({ titleId: "luv-hypothesis" })) as {
       found: boolean;
       scenes: { id: string; name: string; startSeconds: number; endSeconds: number }[];
@@ -53,9 +53,9 @@ describe("evidence tools", () => {
     const lab = result.scenes.find((s) => s.id === "luv-scene-1");
     assert.equal(result.found, true);
     assert.deepEqual(lab && { name: lab.name, start: lab.startSeconds, end: lab.endSeconds }, {
-      name: "Lab desk discussion",
-      start: 42,
-      end: 47,
+      name: "Café table conversation",
+      start: 7,
+      end: 10,
     });
   });
 

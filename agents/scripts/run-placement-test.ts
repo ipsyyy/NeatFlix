@@ -396,10 +396,10 @@ async function main(): Promise<number> {
       replies.length === 1 && extractHandoffs(reply?.content ?? "").length === 1 && envelope?.senderRole === "placement-director" &&
         envelope.recipientRole === "release-governor" && envelope.decision === "instructions-ready" && envelope.blockers.length === 0 && readable.length > 0],
     ["Typed placement plan is present, schema-valid, and visible in the BAND message", Boolean(plan) && planErrors.length === 0 && Boolean(reply?.content.includes('"kind": "placement-plan"'))],
-    [`Plan: ${TITLE_ID} ${SCENE_ID} 00:42–00:47 from ${MATCH_ARTIFACT_ID}, artwork ${ARTWORK_SRC}; Daybreak Cold Brew branded takeaway cup, visible lab desk, stationary, no hand interaction`,
+    [`Plan: ${TITLE_ID} ${SCENE_ID} 00:07–00:10 from ${MATCH_ARTIFACT_ID}, artwork ${ARTWORK_SRC}; Daybreak Cold Brew branded takeaway cup, visible café table, stationary, no hand interaction`,
       plan?.sourceArtifacts.titleId === TITLE_ID && plan.sourceArtifacts.matchArtifactId === MATCH_ARTIFACT_ID && plan.sourceMedia.src === ARTWORK_SRC &&
         envelope?.artifactId.includes(SCENE_ID) === true && !/hate|hh-scene/i.test(reply?.content ?? "") &&
-        plan.scene.sceneId === SCENE_ID && plan.scene.startSeconds === 42 && plan.scene.endSeconds === 47 && plan.product.product === "Daybreak Cold Brew" &&
+        plan.scene.sceneId === SCENE_ID && plan.scene.startSeconds === 7 && plan.scene.endSeconds === 10 && plan.product.product === "Daybreak Cold Brew" &&
         plan.product.format === "Branded takeaway coffee cup" && plan.placement.region.toLowerCase() === PLACEMENT_REGION && plan.placement.motion === "stationary" && plan.placement.handInteraction === "none"],
     ["Plan has scale, perspective, lighting, shadow, color guidance; face, body, background, composition preservation; brand limits; negative constraints",
       Boolean(plan) && Object.values(plan!.guidance).every((v) => String(v).trim().length > 0) && Object.values(plan!.preservation).every((v) => (v as string[]).length > 0) &&

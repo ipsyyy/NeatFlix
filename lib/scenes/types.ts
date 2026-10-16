@@ -42,6 +42,8 @@ export type SceneCandidate = {
   /** Objects that could sit naturally in the scene. Empty when none. */
   opportunities: PlacementObject[];
   checks: GuardrailCheck[];
+  /** Representative source-frame time for the recommended scene, inside its window. Not yet extracted. */
+  representativeFrameSeconds?: number;
 };
 
 export type SceneReview = {

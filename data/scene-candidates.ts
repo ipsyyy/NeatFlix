@@ -21,6 +21,9 @@ function defineSceneReview(review: SceneReview): SceneReview {
     if (s.startSeconds < 0 || s.endSeconds <= s.startSeconds || s.endSeconds > title.durationSeconds) {
       throw new Error(`${s.id} timestamps fall outside ${title.title}'s runtime.`);
     }
+    if (s.representativeFrameSeconds !== undefined && (s.representativeFrameSeconds < s.startSeconds || s.representativeFrameSeconds > s.endSeconds)) {
+      throw new Error(`${s.id} representative frame falls outside its window.`);
+    }
     const failed = s.checks.some((c) => c.outcome === "fail");
     if (failed && s.decision !== "rejected") {
       throw new Error(`${s.id} fails a guardrail, so it must be rejected.`);
@@ -40,67 +43,80 @@ const sceneReviews: SceneReview[] = [
     titleId: "luv-hypothesis",
     caseId: "NF-DEMO-0001",
     source: "demo-fixture",
+    // Windows observed in the registered source clip asset:luv-hypothesis:source-video:v1
+    // (20.064 s, 1280×720): 00:00–00:04 single close-up; about 00:04.25–00:06.75
+    // a different couple standing at the counter; about 00:07–00:14.25 the café
+    // table; about 00:14.5–00:20 a close two-shot.
     scenes: [
       {
         id: "luv-scene-1",
-        name: "Lab desk discussion",
-        startSeconds: 42,
-        endSeconds: 47,
+        name: "Café table conversation",
+        startSeconds: 7,
+        endSeconds: 10,
+        representativeFrameSeconds: 8,
         decision: "recommended",
         rank: 1,
         rationale:
-          "Light, stable, and uncluttered, with a clear desk surface where an everyday object belongs.",
+          "A steady medium-wide shot of both seated actors with a clear front-right tabletop area, though the table already holds two takeaway cups and a pastry.",
         tone: "Light, playful",
-        camera: "Stable medium-wide shot",
-        surface: "Lab desk, clear and in frame",
-        opportunities: ["Coffee cup", "Phone", "Laptop"],
+        camera: "Stable medium-wide shot of the café table",
+        surface: "Café table; front-right tabletop area clear and in frame",
+        opportunities: ["Coffee cup", "Beverage"],
         checks: [
-          { id: "tone", outcome: "pass", evidence: "Playful back-and-forth; no sensitive or emotional moment." },
-          { id: "camera-motion", outcome: "pass", evidence: "Camera holds a stable medium-wide shot for the full five seconds." },
-          { id: "placement-surface", outcome: "pass", evidence: "Desk surface is visible and unobstructed." },
-          { id: "face-framing", outcome: "pass", evidence: "No close-up faces; both actors are framed medium-wide." },
+          { id: "tone", outcome: "pass", evidence: "A light, comic exchange: he reacts with exaggerated surprise while she stirs her drink. No sensitive moment." },
+          { id: "camera-motion", outcome: "pass", evidence: "The camera holds the same medium-wide framing of the table from 00:07 to 00:10." },
+          {
+            id: "placement-surface",
+            outcome: "pass",
+            evidence:
+              "The front-right tabletop, right of her cup toward the near edge, is clear of faces, hands, and props. The table is not empty: two existing takeaway cups and a pastry plate sit at its centre.",
+          },
+          {
+            id: "face-framing",
+            outcome: "pass",
+            evidence:
+              "Both faces are medium-wide and well above the table. She holds the straw in her own cup, his left hand rests near the front-left edge, and his hand starts rising at about 00:09.75, away from the front-right area.",
+          },
           { id: "actor-restrictions", outcome: "pass", evidence: "No actor restriction recorded for anyone in the shot." },
         ],
       },
       {
         id: "luv-scene-2",
-        name: "Campus café conversation",
-        startSeconds: 78,
-        endSeconds: 83,
-        decision: "acceptable",
-        rank: 2,
-        rationale:
-          "Relaxed and natural for a drink or takeaway bag, but background movement makes a clean insert harder.",
-        tone: "Relaxed, conversational",
-        camera: "Framing not yet recorded; moderate movement behind the table",
-        surface: "Café table",
-        opportunities: ["Beverage", "Food bag"],
+        name: "Counter two-shot",
+        startSeconds: 5,
+        endSeconds: 6,
+        decision: "rejected",
+        rank: null,
+        rationale: "A different couple stands at the café counter in a medium close-up with no surface in frame, so an object has nowhere to sit.",
+        tone: "Cheerful",
+        camera: "Medium close-up two-shot at the counter, after a cut at about 00:04.25",
+        surface: "None in frame",
+        opportunities: [],
         checks: [
-          { id: "tone", outcome: "pass", evidence: "Easygoing conversation; no sensitive moment." },
-          { id: "camera-motion", outcome: "caution", evidence: "Moderate background movement could make an inserted object harder to keep stable." },
-          { id: "placement-surface", outcome: "pass", evidence: "Table surface is available in the shot." },
-          { id: "face-framing", outcome: "not-assessed", evidence: "Face framing is not recorded in this fixture. Confirm before generation." },
-          { id: "actor-restrictions", outcome: "pass", evidence: "No known actor restriction for the cast in this scene." },
+          { id: "tone", outcome: "pass", evidence: "Both smile and react cheerfully; no sensitive moment." },
+          { id: "camera-motion", outcome: "caution", evidence: "The shot opens on him moving toward the camera before settling into the two-shot." },
+          { id: "placement-surface", outcome: "fail", evidence: "No table or counter surface is visible below the two actors." },
+          { id: "face-framing", outcome: "fail", evidence: "Medium close-up: their faces and shoulders fill most of the frame." },
+          { id: "actor-restrictions", outcome: "pass", evidence: "No actor restriction recorded for anyone in the shot." },
         ],
       },
       {
         id: "luv-scene-3",
-        name: "Hallway disagreement",
-        startSeconds: 124,
-        endSeconds: 129,
+        name: "Close two-shot",
+        startSeconds: 15,
+        endSeconds: 20,
         decision: "rejected",
         rank: null,
-        rationale:
-          "Emotionally tense, tightly framed, and without a surface, so any product would intrude on the moment.",
-        tone: "Emotionally tense",
-        camera: "Close framing on the actors",
-        surface: "None",
+        rationale: "The table drops out of frame and the shot tightens on both faces, so any product would intrude on them.",
+        tone: "Warm, conversational",
+        camera: "Close two-shot after a cut at about 00:14.5",
+        surface: "None in frame",
         opportunities: [],
         checks: [
-          { id: "tone", outcome: "fail", evidence: "A tense disagreement; a product here risks undermining the scene and viewer trust." },
-          { id: "camera-motion", outcome: "not-assessed", evidence: "Camera motion is not recorded in this fixture." },
-          { id: "placement-surface", outcome: "fail", evidence: "No surface where an object could sit naturally." },
-          { id: "face-framing", outcome: "fail", evidence: "Close framing on the actors leaves no room for an object without visual intrusion." },
+          { id: "tone", outcome: "pass", evidence: "A warm, smiling conversation; no sensitive moment." },
+          { id: "camera-motion", outcome: "not-assessed", evidence: "Not measured; sampled frames show similar framing throughout." },
+          { id: "placement-surface", outcome: "fail", evidence: "The tabletop is out of frame." },
+          { id: "face-framing", outcome: "fail", evidence: "Close framing: both faces fill the frame." },
           { id: "actor-restrictions", outcome: "pass", evidence: "No actor restriction recorded for anyone in the shot." },
         ],
       },

@@ -344,8 +344,8 @@ async function main(): Promise<number> {
         envelope.decision === "recommend" && envelope.blockers.length === 0 && /daybreak-cold-brew/.test(envelope.artifactId) && /Daybreak Cold Brew/.test(readable)],
     ["Every evidence item cites the structured handoff or an approved tool result", Boolean(envelope) && outputErrors.every((e) => !/evidence|room history/.test(e)) &&
       envelope!.evidence.every((e) => (APPROVED_EVIDENCE_SOURCES["campaign-matcher"] ?? []).some((p) => e.source.trim().toLowerCase().startsWith(p)))],
-    ["Placement: stationary branded takeaway coffee cup on the visible lab desk, no hand interaction",
-      /stationary/i.test(placementText) && /branded takeaway coffee cup/i.test(placementText) && /lab desk/i.test(placementText) && /no hand interaction/i.test(placementText)],
+    ["Placement: stationary branded takeaway coffee cup on the visible café table, no hand interaction",
+      /stationary/i.test(placementText) && /branded takeaway coffee cup/i.test(placementText) && /caf[eé] table/i.test(placementText) && /no hand interaction/i.test(placementText)],
     ["States subscriber targeting is rule-based because subscriber records are not connected",
       Boolean(envelope?.assumptions.some((a) => /subscriber records are not connected/i.test(a) && /rule-based/i.test(a)))],
     [`States exactly: "${PLACEMENT_DIRECTOR_DISCLOSURE}"`, readable.includes(PLACEMENT_DIRECTOR_DISCLOSURE) && Boolean(human && reply?.mentions.includes(human.id))],

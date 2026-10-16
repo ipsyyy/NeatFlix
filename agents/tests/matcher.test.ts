@@ -48,9 +48,9 @@ describe("Campaign Matcher evidence tools", () => {
     };
     assert.equal(r.found, true);
     assert.equal(r.titleId, "luv-hypothesis");
-    assert.equal(r.scene.name, "Lab desk discussion");
-    assert.equal(r.scene.durationSeconds, 5);
-    assert.match(r.scene.surface, /Lab desk/);
+    assert.equal(r.scene.name, "Café table conversation");
+    assert.equal(r.scene.durationSeconds, 3);
+    assert.match(r.scene.surface, /Café table/);
     assert.ok(r.scene.opportunities.includes("Coffee cup"));
   });
 
@@ -83,12 +83,12 @@ describe("Campaign Matcher evidence tools", () => {
     for (const label of ["Age range", "Subscription tier", "Premium exclusion", "Minor exclusion", "Market"]) {
       assert.ok(r.audienceRules.some((c) => c.label === label), label);
     }
-    assert.ok(r.fitChecks.some((c) => c.label === "Placement length" && /5 seconds/.test(c.evidence)));
+    assert.ok(r.fitChecks.some((c) => c.label === "Placement length" && /3 seconds/.test(c.evidence)));
     assert.ok(r.whyItFits.some((w) => /stationary coffee cup/.test(w)));
     assert.ok(r.limitations.some((l) => /stationary on the desk with no hand interaction/.test(l)));
     assert.ok(r.limitations.some((l) => /not yet applied to subscriber records/.test(l)));
     assert.equal(r.productFormat, "Branded takeaway coffee cup");
-    assert.match(r.surface, /Lab desk/);
+    assert.match(r.surface, /Café table/);
   });
 
   it("reports unknown scenes and campaigns instead of guessing", async () => {
@@ -107,7 +107,7 @@ describe("Campaign matching rejections (rules applied to modified copies)", () =
     ["minor exclusion missing", variant({ audience: { ...daybreak.audience, exclusions: ["premium-ad-free"] } }), "Minor exclusion"],
     ["alcohol advertiser", variant({ category: "alcohol" }), "Advertiser category"],
     ["medium brand-safety risk", variant({ brandSafetyRisk: "medium" }), "Campaign risk level"],
-    ["placement length outside the scene", variant({ placementSeconds: { min: 3, max: 4 } }), "Placement length"],
+    ["placement length outside the scene", variant({ placementSeconds: { min: 4, max: 5 } }), "Placement length"],
     ["product the scene cannot hold", variant({ placementObject: "Food bag" }), "Object belongs in scene"],
   ];
   for (const [name, campaign, failedCheck] of cases) {
@@ -119,11 +119,12 @@ describe("Campaign matching rejections (rules applied to modified copies)", () =
     });
   }
 
-  it("does not recommend Daybreak for the café scene (no coffee cup) or the rejected hallway scene", () => {
-    assert.equal(matchCampaignToScene(daybreak, scene("luv-scene-2"), title).decision, "not-recommended");
-    const hallway = matchCampaignToScene(daybreak, scene("luv-scene-3"), title);
-    assert.equal(hallway.decision, "not-recommended");
-    assert.ok(failing(hallway).includes("Tone match"));
+  it("does not recommend Daybreak for the rejected counter and close two-shot scenes (no surface, faces too close)", () => {
+    for (const id of ["luv-scene-2", "luv-scene-3"]) {
+      const match = matchCampaignToScene(daybreak, scene(id), title);
+      assert.equal(match.decision, "not-recommended", id);
+      for (const check of ["Object belongs in scene", "Surface to hold it", "Clear of faces"]) assert.ok(failing(match).includes(check), `${id}: ${check}`);
+    }
   });
 
   it("does not recommend for a sensitive title", () => {
