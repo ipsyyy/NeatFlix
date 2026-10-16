@@ -272,6 +272,8 @@ export class WorkflowRegistry {
     const fetched = await this.store.listMediaAssetsForPlan(planId, "generated-preview", REGISTRY_LOOKUP_CAP + 1);
     // Never choose from a truncated result.
     if (fetched.length > REGISTRY_LOOKUP_CAP) return fail(`More than ${REGISTRY_LOOKUP_CAP} previews are registered for ${planId}; refusing to choose from a truncated lookup.`);
+    // Until previews are selected by asset ID, never choose between several: a fallback must not stand in silently.
+    if (fetched.length > 1) return fail(`${fetched.length} previews are registered for ${planId}; select one by asset ID before review.`);
     const rows = [...fetched].sort((a, b) => b.created_at.localeCompare(a.created_at));
     const problems: string[] = [];
     for (const row of rows) {

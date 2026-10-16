@@ -317,7 +317,7 @@ describe("registry lookups fail closed on truncation (security follow-up)", () =
     assert.deepEqual(store.limits, [CAP + 1], "the cap is requested plus one, never more");
   });
 
-  it("chooses a preview at the cap but refuses to choose from more than the cap", async () => {
+  it("chooses a single preview, refuses to choose among several, and refuses a truncated lookup", async () => {
     const PLAN = validPlacementPlan().planId;
     const preview = (i: number): NewMediaAsset => ({
       asset_id: `asset:generated-preview:p${i}`, case_id: CASE, plan_id: PLAN, kind: "generated-preview", storage_ref: `storage://nf-media/previews/p${i}.mp4`,
@@ -331,8 +331,11 @@ describe("registry lookups fail closed on truncation (security follow-up)", () =
       for (let i = 1; i <= n; i++) await store.insertMediaAsset(preview(i));
       return workflow.loadGeneratedPreview(PLAN);
     };
+    const one = await seeded(1);
+    assert.ok(one.ok && one.value.assetId === "asset:generated-preview:p1", "the only preview");
+    // Several previews (e.g. a disclosed fallback beside a Reactor preview) are never chosen between implicitly.
     const atCap = await seeded(CAP);
-    assert.ok(atCap.ok && atCap.value.assetId === `asset:generated-preview:p${CAP}`, "newest of exactly the cap");
+    assert.ok(!atCap.ok && atCap.errors.some((e) => /select one by asset ID/.test(e)), "no newest-wins choice");
     const overCap = await seeded(CAP + 1);
     assert.ok(!overCap.ok && overCap.errors.some((e) => /truncated/.test(e)));
   });

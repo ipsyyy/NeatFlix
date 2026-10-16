@@ -24,6 +24,7 @@ export const REACTOR_GENERATOR = "reactor";
 export const MOTION_PREVIEW_ORIGIN = "reactor-orbis-motion-preview";
 export const MOTION_PROMPT_FIELD = "prompts.motion.prompt";
 export const IMAGE_PREPROCESSING = "none";
+const PREVIEW_LOOKUP_CAP = 20;
 /** Container duration may round by up to a few frames against the recording markers. */
 export const CLIP_DURATION_TOLERANCE_SECONDS = 0.2;
 
@@ -38,6 +39,11 @@ export type MotionPreviewRequest = {
   outputStorageRef: string;
   seed: number;
   resolution: string;
+  /**
+   * Attempt keys this request also answers to: a claim under any of them refuses
+   * a run, so renaming the output identity never re-enables a claimed attempt.
+   */
+  legacyAttemptKeys?: readonly string[];
 };
 
 export type ProviderCostRate = { usdPerSecond: number; source: string; retrievedAt: string };
@@ -261,7 +267,10 @@ export async function loadVerifiedMotionPreview(deps: Pick<MotionPreviewDeps, "s
 }
 
 /** Verified inputs for a request: everything checked before any provider connection. Read-only. */
-export async function verifyMotionInputs(req: MotionPreviewRequest, deps: Pick<MotionPreviewDeps, "workflow" | "store" | "storage">) {
+export async function verifyMotionInputs(
+  req: Pick<MotionPreviewRequest, "planId" | "editedStillAssetId" | "editedStillStorageRef" | "editedStillChecksum" | "visualReviewId" | "motionPromptSha256">,
+  deps: Pick<MotionPreviewDeps, "workflow" | "store" | "storage">,
+) {
   // 1. The immutable plan and its exact motion prompt.
   const plan = await deps.workflow.loadPlan(req.planId);
   if (!plan.ok) return { ok: false as const, stage: "plan", errors: plan.errors };
@@ -314,10 +323,16 @@ export async function executeMotionPreview(req: MotionPreviewRequest, deps: Moti
     const prov = existing.row.provenance as MotionPreviewProvenance;
     return { ok: true, status: "reused", assetId: req.outputAssetId, checksum: existing.row.checksum, durationSeconds: prov.video.durationSeconds, width: prov.video.width, height: prov.video.height, costUsd: prov.costUsd };
   }
-  if ((await deps.store.listMediaAssetsForPlan(req.planId, "generated-preview", 2)).length > 0) return stop("idempotency", "Another generated preview is already registered for this plan; not creating a second.");
+  // Only another Reactor preview blocks this one; a separately identified fallback never does.
+  const others = await deps.store.listMediaAssetsForPlan(req.planId, "generated-preview", PREVIEW_LOOKUP_CAP + 1);
+  if (others.length > PREVIEW_LOOKUP_CAP) return stop("idempotency", "Too many generated previews are registered for this plan to check; refusing.");
+  const isReactor = (r: MediaAssetRow) => r.generator === REACTOR_GENERATOR || (isObj(r.provenance) && r.provenance.origin === MOTION_PREVIEW_ORIGIN);
+  if (others.some((r) => r.asset_id !== req.outputAssetId && isReactor(r))) return stop("idempotency", "Another Reactor preview is already registered for this plan; not creating a second.");
   if (await deps.storage.download(req.outputStorageRef)) return stop("idempotency", "An object already exists at the output path without a registry record; not overwriting.");
   const key = attemptKey(req);
-  if (await deps.ledger.has(key)) return stop("idempotency", "A paid attempt for this request was already made and did not register a preview; not retrying.");
+  for (const k of [key, ...(req.legacyAttemptKeys ?? [])]) {
+    if (await deps.ledger.has(k)) return stop("idempotency", "A paid attempt for this request was already made and did not register a preview; not retrying.");
+  }
   const rate = deps.costRate;
   if (!(Number.isFinite(rate?.usdPerSecond) && rate.usdPerSecond >= 0 && rate.source)) return stop("cost", "No documented per-second rate is available; not starting a paid session.");
 

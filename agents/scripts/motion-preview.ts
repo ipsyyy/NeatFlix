@@ -40,10 +40,15 @@ const APPROVED_PREVIEW: Readonly<MotionPreviewRequest> = Object.freeze({
   editedStillChecksum: "sha256:be7a04de0a59446f6a2c47ae5b29d6c3af04a29be1f7d471eb3e12d38e8ab73f",
   visualReviewId: "fd0b60da-42e2-4995-a4da-71cc2b6bbe43",
   motionPromptSha256: "61c714d43c30ad2778be05fda96b893af0557d7bb09a25c334ac64e91020e12b",
-  outputAssetId: "asset:luv-hypothesis:generated-preview:luv-scene-1:v3",
-  outputStorageRef: "storage://nf-media/previews/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v3/generated-preview-v3.mp4",
+  // Reserved for the Reactor result; the local FFmpeg fallback has its own identity (…:v3-fallback).
+  outputAssetId: "asset:luv-hypothesis:generated-preview:luv-scene-1:v3-reactor",
+  outputStorageRef: "storage://nf-media/previews/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v3/generated-preview-v3-reactor.mp4",
   seed: 42,
   resolution: "1080p",
+  // Attempts were claimed under the earlier identity; those claims still refuse a run.
+  legacyAttemptKeys: Object.freeze([
+    "plan:daybreak-cold-brew:luv-scene-1:v3|asset:luv-hypothesis:generated-preview:luv-scene-1:v3|61c714d43c30ad2778be05fda96b893af0557d7bb09a25c334ac64e91020e12b",
+  ]),
 });
 const CHROME = process.env.CHROME_PATH?.trim() || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const LEDGER_DIR = join(homedir(), ".nativeframe", "paid-attempts");
@@ -75,7 +80,8 @@ async function main(): Promise<number> {
 
   const existing = await store.getMediaAsset(req.outputAssetId);
   const ledger = new FileAttemptLedger(LEDGER_DIR);
-  const claimed = await ledger.has(attemptKey(req));
+  let claimed = false;
+  for (const k of [attemptKey(req), ...(req.legacyAttemptKeys ?? [])]) claimed ||= await ledger.has(k);
   out(`State: preview ${existing ? "already registered (a run would reuse it)" : "not registered"}; paid attempt ${claimed ? "already claimed (a run would refuse)" : "not yet made"}`);
   const chrome = await access(CHROME).then(() => true, () => false);
   const ffprobe = await which("ffprobe");
