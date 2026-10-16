@@ -15,8 +15,29 @@ export const STILL_PROMPT_FIELD = "prompts.stillImageEdit.prompt";
 export const EDITED_STILL_ORIGIN = "gemini-image-edit";
 export const GEMINI_GENERATOR = "google-gemini";
 /** How a provider image became the stored 1280×720 PNG. */
-export const NORMALIZATION_METHODS = ["none", "png-reencode", "lanczos3-resize-to-1280x720-png"] as const;
+export const NORMALIZATION_METHODS = ["none", "png-reencode", "lanczos3-resize-to-1280x720-png", "lanczos3-uniform-scale-center-crop-to-1280x720-png"] as const;
 export type NormalizationMethod = (typeof NORMALIZATION_METHODS)[number];
+export const NEAR_16_9_METHOD = "lanczos3-uniform-scale-center-crop-to-1280x720-png" satisfies NormalizationMethod;
+
+/** Most a provider image's aspect ratio may differ from exact 16:9, as a fraction of 16:9. */
+export const ASPECT_TOLERANCE = 0.01;
+/** Most of either dimension a centered crop may remove, as a fraction of that dimension. */
+export const CROP_LIMIT = 0.01;
+
+export type Rect = { left: number; top: number; width: number; height: number };
+export type Edges = { left: number; right: number; top: number; bottom: number };
+
+/** Normalization record. Crop details are present only for the near-16:9 method. */
+export type NormalizationRecord = {
+  method: NormalizationMethod;
+  tool: string;
+  /** SHA-256 of the provider's image bytes as returned, before any processing. */
+  originalSha256: string;
+  /** |w/h − 16/9| ÷ (16/9). */
+  aspectRatioDifference: number;
+  scale: { factor: number; scaledWidth: number; scaledHeight: number } | null;
+  crop: { scaled: Rect; original: Rect; removedScaled: Edges; removedOriginal: Edges } | null;
+};
 
 export type EditedStillProvenance = {
   origin: typeof EDITED_STILL_ORIGIN;
@@ -41,7 +62,7 @@ export type EditedStillProvenance = {
   usage: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null } | null;
   originalResolution: { width: number; height: number; mimeType: string };
   finalResolution: { width: typeof EDITED_STILL_WIDTH; height: typeof EDITED_STILL_HEIGHT };
-  normalization: { method: NormalizationMethod; tool: string };
+  normalization: NormalizationRecord;
   outputChecksum: string;
   humanVisualReview: "pending";
 };
@@ -99,17 +120,58 @@ export function validateEditedStill(row: unknown, ctx: EditedStillContext): stri
   if (p.costUsd !== row.cost_usd) e.push("provenance.costUsd must equal cost_usd.");
   if (row.cost_usd === null && (typeof p.costBasis !== "string" || p.costBasis.trim().length < 10)) e.push("A null cost needs an explicit provenance.costBasis.");
   const orig = isObj(p.originalResolution) ? p.originalResolution : {};
-  if (!posInt(orig.width) || !posInt(orig.height) || typeof orig.mimeType !== "string") e.push("provenance.originalResolution needs width, height, and mimeType.");
-  else if ((orig.width as number) * 9 !== (orig.height as number) * 16) e.push("The original provider image must be exactly 16:9.");
   const fin = isObj(p.finalResolution) ? p.finalResolution : {};
   if (fin.width !== EDITED_STILL_WIDTH || fin.height !== EDITED_STILL_HEIGHT) e.push("provenance.finalResolution must be 1280×720.");
   const norm = isObj(p.normalization) ? p.normalization : {};
-  if (!NORMALIZATION_METHODS.includes(norm.method as NormalizationMethod) || typeof norm.tool !== "string") e.push("provenance.normalization needs a known method and tool.");
-  else if (norm.method === "none" && (orig.width !== EDITED_STILL_WIDTH || orig.height !== EDITED_STILL_HEIGHT || orig.mimeType !== "image/png")) {
-    e.push('Normalization "none" is only valid for a 1280×720 PNG.');
-  }
+  if (!posInt(orig.width) || !posInt(orig.height) || typeof orig.mimeType !== "string") e.push("provenance.originalResolution needs width, height, and mimeType.");
+  else e.push(...validateNormalization(norm, orig.width as number, orig.height as number, String(orig.mimeType)));
   if (typeof row.checksum !== "string" || !SHA256.test(row.checksum) || p.outputChecksum !== row.checksum) e.push("provenance.outputChecksum must equal the row checksum.");
   if (p.humanVisualReview !== "pending") e.push('provenance.humanVisualReview must be "pending".');
+  return e;
+}
+
+/** |w/h − 16/9| ÷ (16/9). */
+export function aspectDifference(width: number, height: number): number {
+  return Math.abs(width / height - 16 / 9) / (16 / 9);
+}
+
+/** Checks a normalization record is consistent with the provider image it describes. */
+export function validateNormalization(norm: Record<string, unknown>, width: number, height: number, mimeType: string): string[] {
+  const e: string[] = [];
+  const method = norm.method as NormalizationMethod;
+  if (!NORMALIZATION_METHODS.includes(method) || typeof norm.tool !== "string" || !norm.tool.trim()) return ["provenance.normalization needs a known method and tool."];
+  if (typeof norm.originalSha256 !== "string" || !/^[0-9a-f]{64}$/.test(norm.originalSha256)) e.push("provenance.normalization.originalSha256 is required.");
+  const diff = aspectDifference(width, height);
+  if (typeof norm.aspectRatioDifference !== "number" || Math.abs(norm.aspectRatioDifference - diff) > 1e-12) e.push("provenance.normalization.aspectRatioDifference does not match the original resolution.");
+  const exact = width * 9 === height * 16;
+  if (method !== NEAR_16_9_METHOD) {
+    if (!exact) e.push(`Normalization "${method}" requires an exactly 16:9 original.`);
+    if (norm.scale !== null || norm.crop !== null) e.push(`Normalization "${method}" records no scale or crop.`);
+    if (method === "none" && (width !== EDITED_STILL_WIDTH || height !== EDITED_STILL_HEIGHT || mimeType !== "image/png")) e.push('Normalization "none" is only valid for a 1280×720 PNG.');
+    if (method === "png-reencode" && (width !== EDITED_STILL_WIDTH || height !== EDITED_STILL_HEIGHT)) e.push('Normalization "png-reencode" is only valid at 1280×720.');
+    return e;
+  }
+  if (exact) e.push("An exactly 16:9 original is resized, not cropped.");
+  if (diff > ASPECT_TOLERANCE) e.push("The original is outside the 16:9 tolerance.");
+  const scale = isObj(norm.scale) ? norm.scale : {};
+  const crop = isObj(norm.crop) ? norm.crop : {};
+  const sw = scale.scaledWidth as number;
+  const sh = scale.scaledHeight as number;
+  if (!posInt(sw) || !posInt(sh) || sw * height !== sh * width || typeof scale.factor !== "number" || Math.abs((scale.factor as number) - sh / height) > 1e-12) {
+    e.push("provenance.normalization.scale must be one uniform factor to whole pixels.");
+    return e;
+  }
+  if (Math.min(sw - EDITED_STILL_WIDTH, sh - EDITED_STILL_HEIGHT) !== 0 || sw < EDITED_STILL_WIDTH || sh < EDITED_STILL_HEIGHT) e.push("The scaled image must cover 1280×720 exactly on one axis.");
+  const r = isObj(crop.scaled) ? crop.scaled : {};
+  const rem = isObj(crop.removedScaled) ? crop.removedScaled : {};
+  const ex = sw - EDITED_STILL_WIDTH;
+  const ey = sh - EDITED_STILL_HEIGHT;
+  const left = Math.floor(ex / 2);
+  const top = Math.floor(ey / 2);
+  if (r.left !== left || r.top !== top || r.width !== EDITED_STILL_WIDTH || r.height !== EDITED_STILL_HEIGHT) e.push("The crop must be the centered 1280×720 rectangle.");
+  if (rem.left !== left || rem.right !== ex - left || rem.top !== top || rem.bottom !== ey - top) e.push("provenance must record the pixels removed from every edge.");
+  if (ex / sw > CROP_LIMIT || ey / sh > CROP_LIMIT) e.push("The crop removes more than 1% of a dimension.");
+  if (!isObj(crop.original) || !isObj(crop.removedOriginal)) e.push("provenance must record the crop in original pixels.");
   return e;
 }
 

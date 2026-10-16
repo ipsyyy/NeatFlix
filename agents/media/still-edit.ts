@@ -3,7 +3,12 @@ import type { MediaAssetRow, WorkflowStore } from "@/agents/persistence/store";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
 import type { WorkflowRegistry } from "@/agents/persistence/workflow";
 import {
+  ASPECT_TOLERANCE,
+  CROP_LIMIT,
   EDITED_STILL_HEIGHT,
+  NEAR_16_9_METHOD,
+  aspectDifference,
+  type NormalizationRecord,
   EDITED_STILL_ORIGIN,
   EDITED_STILL_WIDTH,
   GEMINI_GENERATOR,
@@ -53,10 +58,28 @@ export type StillEditResult =
 
 const stop = (stage: string, ...errors: string[]): StillEditResult => ({ ok: false, stage, errors });
 
-/** Normalizes a provider image to a 1280×720 PNG: exact 16:9 only, never cropped or stretched. */
-export async function normalizeToStill(data: Uint8Array): Promise<
-  { ok: true; png: Buffer; original: { width: number; height: number; mimeType: string }; method: NormalizationMethod } | { ok: false; error: string }
-> {
+export type NormalizedStill = {
+  ok: true;
+  png: Buffer;
+  original: { width: number; height: number; mimeType: string };
+  method: NormalizationMethod;
+  normalization: NormalizationRecord;
+};
+
+const PNG_OPTIONS = { compressionLevel: 9, adaptiveFiltering: false, palette: false } as const;
+
+/**
+ * Normalizes a provider image to a 1280×720 PNG, deterministically and without
+ * any stretch:
+ * - 1280×720 PNG: kept byte-for-byte. 1280×720 JPEG/WebP: re-encoded to PNG.
+ * - Any other exact 16:9 size: Lanczos3 resize to 1280×720 (uniform by construction).
+ * - Near 16:9 (|w/h − 16/9| ÷ 16/9 ≤ 1%): one uniform Lanczos3 scale so the image
+ *   covers 1280×720 exactly on one axis — accepted only when that scale lands on
+ *   whole pixels — then a centered 1280×720 crop (an odd excess puts the extra
+ *   pixel on the right/bottom), removing at most 1% of either dimension.
+ * - Anything else is rejected, never cropped further or stretched.
+ */
+export async function normalizeToStill(data: Uint8Array): Promise<NormalizedStill | { ok: false; error: string }> {
   let meta: Metadata;
   try {
     meta = await sharp(data, { failOn: "error" }).metadata();
@@ -66,15 +89,58 @@ export async function normalizeToStill(data: Uint8Array): Promise<
   const { width, height, format } = meta;
   if (!width || !height || !format || !ACCEPTED_INPUT_FORMATS.has(format)) return { ok: false, error: "Provider image is not a decodable PNG, JPEG, or WebP." };
   if (width > MAX_PROVIDER_DIMENSION || height > MAX_PROVIDER_DIMENSION) return { ok: false, error: "Provider image is too large." };
-  if (width * 9 !== height * 16) return { ok: false, error: `Provider image is ${width}×${height}, not exactly 16:9; it is rejected rather than cropped or stretched.` };
   const original = { width, height, mimeType: `image/${format}` };
-  if (width === EDITED_STILL_WIDTH && height === EDITED_STILL_HEIGHT && format === "png") return { ok: true, png: Buffer.from(data), original, method: "none" };
-  const pipeline = sharp(data, { failOn: "error" });
-  const resized = width === EDITED_STILL_WIDTH && height === EDITED_STILL_HEIGHT ? pipeline : pipeline.resize(EDITED_STILL_WIDTH, EDITED_STILL_HEIGHT, { fit: "fill", kernel: "lanczos3" });
-  const png = await resized.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer();
-  const out = await sharp(png).metadata();
-  if (out.width !== EDITED_STILL_WIDTH || out.height !== EDITED_STILL_HEIGHT || out.format !== "png") return { ok: false, error: "Normalized image is not a 1280×720 PNG." };
-  return { ok: true, png, original, method: width === EDITED_STILL_WIDTH && height === EDITED_STILL_HEIGHT ? "png-reencode" : "lanczos3-resize-to-1280x720-png" };
+  const aspect = aspectDifference(width, height);
+  if (aspect > ASPECT_TOLERANCE) {
+    return { ok: false, error: `Provider image is ${width}×${height}, ${(aspect * 100).toFixed(2)}% from 16:9 (limit ${ASPECT_TOLERANCE * 100}%); rejected rather than cropped or stretched.` };
+  }
+  const base = { tool: SHARP_TOOL, originalSha256: sha256Hex(data), aspectRatioDifference: aspect, scale: null, crop: null };
+  const exact = width * 9 === height * 16;
+  const finish = async (png: Buffer, method: NormalizationMethod, normalization: NormalizationRecord): Promise<NormalizedStill | { ok: false; error: string }> => {
+    const out = await sharp(png).metadata();
+    if (out.width !== EDITED_STILL_WIDTH || out.height !== EDITED_STILL_HEIGHT || out.format !== "png") return { ok: false, error: "Normalized image is not a 1280×720 PNG." };
+    return { ok: true, png, original, method, normalization };
+  };
+
+  if (exact) {
+    if (width === EDITED_STILL_WIDTH && height === EDITED_STILL_HEIGHT && format === "png") return finish(Buffer.from(data), "none", { method: "none", ...base });
+    const at720 = width === EDITED_STILL_WIDTH && height === EDITED_STILL_HEIGHT;
+    const method: NormalizationMethod = at720 ? "png-reencode" : "lanczos3-resize-to-1280x720-png";
+    const pipeline = sharp(data, { failOn: "error" });
+    const png = await (at720 ? pipeline : pipeline.resize(EDITED_STILL_WIDTH, EDITED_STILL_HEIGHT, { fit: "fill", kernel: "lanczos3" })).png(PNG_OPTIONS).toBuffer();
+    return finish(png, method, { method, ...base });
+  }
+
+  // Near 16:9: one uniform scale to cover 1280×720, which must land on whole pixels.
+  const wider = width * EDITED_STILL_HEIGHT > height * EDITED_STILL_WIDTH;
+  const scaledWidth = wider ? (width * EDITED_STILL_HEIGHT) / height : EDITED_STILL_WIDTH;
+  const scaledHeight = wider ? EDITED_STILL_HEIGHT : (height * EDITED_STILL_WIDTH) / width;
+  if (!Number.isInteger(scaledWidth) || !Number.isInteger(scaledHeight)) {
+    return { ok: false, error: `Provider image ${width}×${height} cannot be scaled uniformly to whole pixels; it cannot be normalized deterministically.` };
+  }
+  const factor = scaledHeight / height;
+  const excessX = scaledWidth - EDITED_STILL_WIDTH;
+  const excessY = scaledHeight - EDITED_STILL_HEIGHT;
+  if (excessX / scaledWidth > CROP_LIMIT || excessY / scaledHeight > CROP_LIMIT) return { ok: false, error: "The centered crop would remove more than 1% of a dimension." };
+  const left = Math.floor(excessX / 2);
+  const top = Math.floor(excessY / 2);
+  const removedScaled = { left, right: excessX - left, top, bottom: excessY - top };
+  const scaledRect = { left, top, width: EDITED_STILL_WIDTH, height: EDITED_STILL_HEIGHT };
+  const o = (v: number) => v / factor;
+  const normalization: NormalizationRecord = {
+    method: NEAR_16_9_METHOD,
+    ...base,
+    scale: { factor, scaledWidth, scaledHeight },
+    crop: {
+      scaled: scaledRect,
+      original: { left: o(left), top: o(top), width: o(EDITED_STILL_WIDTH), height: o(EDITED_STILL_HEIGHT) },
+      removedScaled,
+      removedOriginal: { left: o(removedScaled.left), right: o(removedScaled.right), top: o(removedScaled.top), bottom: o(removedScaled.bottom) },
+    },
+  };
+  const scaled = await sharp(data, { failOn: "error" }).resize(scaledWidth, scaledHeight, { fit: "fill", kernel: "lanczos3" }).png(PNG_OPTIONS).toBuffer();
+  const png = await sharp(scaled).extract(scaledRect).png(PNG_OPTIONS).toBuffer();
+  return finish(png, NEAR_16_9_METHOD, normalization);
 }
 
 async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
@@ -164,7 +230,7 @@ export async function executeStillEdit(req: StillEditRequest, deps: StillEditDep
     usage: result.usage,
     originalResolution: normalized.original,
     finalResolution: { width: EDITED_STILL_WIDTH, height: EDITED_STILL_HEIGHT },
-    normalization: { method: normalized.method, tool: SHARP_TOOL },
+    normalization: normalized.normalization,
     outputChecksum: checksum,
     humanVisualReview: "pending",
   };

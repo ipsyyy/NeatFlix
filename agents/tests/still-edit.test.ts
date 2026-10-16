@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { collectSecrets } from "@/agents/config/env";
 import type { PlacementPlan } from "@/agents/handoff/placement-plan";
 import { SOURCE_FRAME_DISCLOSURE } from "@/agents/handoff/source-frames";
-import { loadVerifiedEditedStill, sha256Hex, validateEditedStill } from "@/agents/media/edited-still";
+import { aspectDifference, loadVerifiedEditedStill, sha256Hex, validateEditedStill, validateNormalization, type NormalizationRecord } from "@/agents/media/edited-still";
 import { GeminiImageEditProvider, parseInteraction, ProviderError, type ImageEditProvider, type ProviderEditResult } from "@/agents/media/gemini-provider";
 import { executeStillEdit, normalizeToStill, type StillEditRequest } from "@/agents/media/still-edit";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
@@ -90,7 +90,7 @@ describe("controlled Gemini still edit", () => {
     assert.equal(prov.responseId, "interaction-123");
     assert.equal(prov.humanVisualReview, "pending");
     assert.equal(prov.promptSha256, sha256Hex(plan.prompts.stillImageEdit.prompt));
-    assert.deepEqual(prov.normalization, { method: "none", tool: "sharp@0.35.5" });
+    assert.deepEqual(prov.normalization, { method: "none", tool: "sharp@0.35.5", originalSha256: (prov.normalization as { originalSha256: string }).originalSha256, aspectRatioDifference: 0, scale: null, crop: null });
     assert.equal(verified.ok && verified.row.cost_usd, null);
     assert.match(String(prov.costBasis), /no price/);
     assert.ok(storage.objects.has(REQ.outputStorageRef));
@@ -121,10 +121,10 @@ describe("controlled Gemini still edit", () => {
     assert.equal(parsed.images.length, 1, "output_image duplicates the step image and is not counted twice");
   });
 
-  it("rejects any aspect ratio other than exactly 16:9, without cropping or stretching", async () => {
-    for (const [w, h] of [[1024, 1024], [1281, 720], [720, 1280], [1344, 768]]) {
+  it("rejects aspect ratios outside the 1% tolerance, without cropping or stretching", async () => {
+    for (const [w, h] of [[1024, 1024], [720, 1280], [1344, 768], [1400, 768]]) {
       const n = await normalizeToStill(await image(w, h));
-      assert.ok(!n.ok && /not exactly 16:9/.test(n.error), `${w}×${h}`);
+      assert.ok(!n.ok && /from 16:9/.test(n.error), `${w}×${h}: ${n.ok ? "accepted" : n.error}`);
     }
   });
 
@@ -221,5 +221,96 @@ describe("Gemini credential handling", () => {
       assert.match(e.message, /HTTP 401/);
       return true;
     });
+  });
+});
+
+describe("near-16:9 normalization (uniform scale, centered crop)", () => {
+  const norm = async (w: number, h: number, shade = 120) => {
+    const n = await normalizeToStill(await image(w, h, "png", shade));
+    assert.ok(n.ok, n.ok ? "" : n.error);
+    return n as Extract<typeof n, { ok: true }>;
+  };
+
+  it("keeps exact 16:9 on the exact paths with no crop", async () => {
+    const exact = await norm(1920, 1080);
+    assert.equal(exact.method, "lanczos3-resize-to-1280x720-png");
+    assert.equal(exact.normalization.crop, null);
+    assert.equal(exact.normalization.aspectRatioDifference, 0);
+  });
+
+  it("handles the observed 1376×768: uniform ×0.9375 to 1290×720, then 5 px off each side", async () => {
+    const n = await norm(1376, 768);
+    assert.equal(n.method, "lanczos3-uniform-scale-center-crop-to-1280x720-png");
+    assert.deepEqual(n.normalization.scale, { factor: 0.9375, scaledWidth: 1290, scaledHeight: 720 });
+    assert.deepEqual(n.normalization.crop?.scaled, { left: 5, top: 0, width: 1280, height: 720 });
+    assert.deepEqual(n.normalization.crop?.removedScaled, { left: 5, right: 5, top: 0, bottom: 0 });
+    const o = n.normalization.crop!.original;
+    assert.ok(Math.abs(o.width - 1365.3333333333333) < 1e-9 && Math.abs(o.left - 5.333333333333333) < 1e-9 && o.height === 768 && o.top === 0);
+    assert.ok(Math.abs(n.normalization.crop!.removedOriginal.left + n.normalization.crop!.removedOriginal.right - 10.666666666666666) < 1e-9, "about 11 original px");
+    assert.ok(Math.abs(n.normalization.aspectRatioDifference - aspectDifference(1376, 768)) < 1e-15);
+    const meta = await sharp(n.png).metadata();
+    assert.deepEqual([meta.width, meta.height, meta.format], [1280, 720, "png"]);
+  });
+
+  it("splits an odd excess symmetrically, the extra pixel on the right or bottom", async () => {
+    const wide = await norm(1291, 720); // already 720 high: 11 px excess
+    assert.deepEqual(wide.normalization.crop?.removedScaled, { left: 5, right: 6, top: 0, bottom: 0 });
+    const tall = await norm(1280, 725); // 5 px excess in height
+    assert.deepEqual(tall.normalization.crop?.removedScaled, { left: 0, right: 0, top: 2, bottom: 3 });
+  });
+
+  it("accepts the tolerance boundary and rejects just outside it", async () => {
+    // 1296×720: 1.25% from 16:9 → outside. 1292×720: 0.9375% → inside, crop 12 px = 0.93% ≤ 1%.
+    const inside = await norm(1292, 720);
+    assert.ok(inside.normalization.aspectRatioDifference <= 0.01);
+    assert.deepEqual(inside.normalization.crop?.removedScaled, { left: 6, right: 6, top: 0, bottom: 0 });
+    const outside = await normalizeToStill(await image(1296, 720));
+    assert.ok(!outside.ok && /from 16:9/.test(outside.error));
+  });
+
+  it("rejects a crop that would remove more than 1% of a dimension, and non-whole-pixel scales", async () => {
+    // Within tolerance, the centered crop never removes more than the aspect difference
+    // (wide: (w−1280)/w < (w−1280)/1280; tall: equal), so the 1% crop limit is enforced on
+    // the record: a normalization claiming a larger crop is rejected.
+    for (let w = 1281; w <= 1292; w++) assert.ok((w - 1280) / w <= aspectDifference(w, 720), String(w));
+    const n = (await norm(1292, 720)).normalization;
+    const overCrop = validateNormalization({ ...n, scale: { factor: 1, scaledWidth: 1294, scaledHeight: 720 }, crop: { ...n.crop!, scaled: { left: 7, top: 0, width: 1280, height: 720 }, removedScaled: { left: 7, right: 7, top: 0, bottom: 0 } } } as Record<string, unknown>, 1294, 720, "image/png");
+    assert.ok(overCrop.some((e) => /more than 1%|tolerance/.test(e)), overCrop.join(" "));
+    // 1377×768 is near 16:9 but ×(720/768) gives 1290.9375 px: not a whole-pixel uniform scale.
+    const fractional = await normalizeToStill(await image(1377, 768));
+    assert.ok(!fractional.ok && /cannot be normalized deterministically/.test(fractional.error));
+  });
+
+  it("produces the same final checksum every time", async () => {
+    const a = await norm(1376, 768, 77);
+    const b = await norm(1376, 768, 77);
+    assert.equal(sha256Hex(a.png), sha256Hex(b.png));
+    assert.equal(a.normalization.originalSha256, b.normalization.originalSha256);
+  });
+
+  it("records complete provenance through the executor, and the validator rejects any inconsistency", async () => {
+    const { store, workflow, storage } = await setup();
+    const providerBytes = await image(1376, 768, "png", 150);
+    const r = await executeStillEdit(REQ, { workflow, store, storage, provider: new FakeProvider(async () => oneImage(providerBytes)) });
+    assert.ok(r.ok && r.normalization === "lanczos3-uniform-scale-center-crop-to-1280x720-png", JSON.stringify(r));
+    const v = await loadVerifiedEditedStill(workflow, store, REQ.outputAssetId);
+    assert.ok(v.ok, v.ok ? "" : v.errors.join(" "));
+    const row = (v as Extract<typeof v, { ok: true }>).row;
+    const prov = row.provenance as Record<string, unknown>;
+    const n = prov.normalization as NormalizationRecord;
+    assert.equal(n.originalSha256, sha256Hex(providerBytes), "original provider-output SHA-256");
+    assert.deepEqual(prov.originalResolution, { width: 1376, height: 768, mimeType: "image/png" });
+    assert.deepEqual(prov.finalResolution, { width: 1280, height: 720 });
+    assert.equal(prov.outputChecksum, row.checksum);
+    assert.equal(n.tool, "sharp@0.35.5");
+    assert.deepEqual(n.crop?.removedScaled, { left: 5, right: 5, top: 0, bottom: 0 });
+    // Any tampering with the normalization record is caught.
+    const bad = (patch: Partial<NormalizationRecord>) => validateNormalization({ ...n, ...patch } as Record<string, unknown>, 1376, 768, "image/png");
+    assert.ok(bad({ scale: { factor: 0.9375, scaledWidth: 1291, scaledHeight: 720 } }).length > 0, "non-uniform scale");
+    assert.ok(bad({ crop: { ...n.crop!, scaled: { left: 0, top: 0, width: 1280, height: 720 } } }).length > 0, "off-center crop");
+    assert.ok(bad({ aspectRatioDifference: 0 }).length > 0);
+    assert.ok(bad({ originalSha256: "" }).length > 0);
+    assert.ok(bad({ method: "lanczos3-resize-to-1280x720-png" }).length > 0, "exact-only method on a near-16:9 original");
+    assert.ok(validateNormalization(n as unknown as Record<string, unknown>, 1500, 768, "image/png").length > 0, "outside tolerance");
   });
 });
