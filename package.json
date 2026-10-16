@@ -18,13 +18,15 @@
     "agents:governor-test": "tsx agents/scripts/run-governor-test.ts",
     "media:edit-still": "tsx agents/scripts/edit-still.ts",
     "media:plan-revision": "tsx agents/scripts/create-plan-revision.ts",
-    "media:visual-review": "tsx agents/scripts/record-visual-review.ts"
+    "media:visual-review": "tsx agents/scripts/record-visual-review.ts",
+    "media:motion-preview": "tsx agents/scripts/motion-preview.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
     "@band-ai/rest-client": "^0.0.146",
     "@band-ai/sdk": "^0.6.0",
     "@google/genai": "2.26.0",
+    "@reactor-team/js-sdk": "3.1.0",
     "lucide-react": "^1.56.0",
     "next": "16.4.0",
     "react": "19.3.0",
@@ -37,6 +39,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
     "tailwindcss": "^4",
