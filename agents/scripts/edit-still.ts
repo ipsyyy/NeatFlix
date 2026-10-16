@@ -35,6 +35,12 @@ const TARGETS: Readonly<Record<string, StillEditRequest>> = Object.freeze({
     outputAssetId: "asset:luv-hypothesis:edited-still:luv-scene-1:v2",
     outputStorageRef: "storage://nf-media/edits/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v2/edited-still-v2.png",
   }),
+  v3: Object.freeze({
+    planId: "plan:daybreak-cold-brew:luv-scene-1:v3",
+    ...SOURCE_FRAME,
+    outputAssetId: "asset:luv-hypothesis:edited-still:luv-scene-1:v3",
+    outputStorageRef: "storage://nf-media/edits/luv-hypothesis/daybreak-cold-brew-luv-scene-1-v3/edited-still-v3.png",
+  }),
 });
 const PROVIDER_TIMEOUT_MS = 180_000;
 

@@ -85,8 +85,9 @@ describe("Campaign Matcher evidence tools", () => {
     }
     assert.ok(r.fitChecks.some((c) => c.label === "Placement length" && /3 seconds/.test(c.evidence)));
     assert.ok(r.whyItFits.some((w) => /stationary coffee cup/.test(w)));
-    assert.ok(r.limitations.some((l) => /stationary on the clear front-right region of the café tabletop/.test(l)));
-    assert.ok(r.limitations.some((l) => /no contact with either actor, their hands, the two existing cups, or the pastry/.test(l)));
+    assert.ok(r.limitations.some((l) => /rebrands the two existing takeaway cups/.test(l)));
+    assert.ok(r.limitations.some((l) => /exactly two cups before and after, no cup or other object added/.test(l)));
+    assert.ok(r.limitations.some((l) => /the woman's straw unchanged/.test(l)));
     assert.ok(r.limitations.some((l) => /not yet applied to subscriber records/.test(l)));
     assert.equal(r.productFormat, "Branded takeaway coffee cup");
     assert.match(r.surface, /Café table/);

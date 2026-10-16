@@ -66,11 +66,11 @@ export const campaigns: readonly Campaign[] = Object.freeze([
     brandSafetyRisk: "low",
     placementSeconds: { min: 3, max: 5 },
     naturalUse:
-      "A takeaway coffee is an everyday object on a work or study desk, so it can sit in frame without explanation.",
+      "The two actors already have one takeaway coffee each, so rebranding those two cups places the product without adding anything to the scene.",
     assumptions: [
       "Audience rules are defined but not yet applied to subscriber records; no viewers have been counted or targeted.",
       "The title is assumed to be available in the United States; the catalogue has no territory metadata yet.",
-      "The cup must stay stationary on the clear front-right region of the café tabletop, right of the woman's existing cup and toward the near edge, with no contact with either actor, their hands, the two existing cups, or the pastry, matching the demo-safety rules.",
+      "Placement rebrands the two existing takeaway cups on the café table, and only their exterior branding changes: exactly two cups before and after, no cup or other object added, each cup's size, shape, position, and lid unchanged, the woman's straw unchanged, and no change to the actors, their clothing, or the background, matching the demo-safety rules.",
       "Brand recall, viewer acceptance, and generation quality are unknown until later stages; nothing here predicts them.",
     ],
     source: "demo-fixture",

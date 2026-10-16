@@ -2,6 +2,7 @@ import { campaigns } from "@/data/campaigns";
 import { catalogue } from "@/data/catalogue";
 import { getSceneReview } from "@/data/scene-candidates";
 import type { EvidenceItem } from "./envelope";
+import { REBRAND_MODE, rebrandApplies, validateRebrand, type RebrandSpec } from "./placement-strategy";
 import { NO_REGISTERED_SOURCE_FRAMES, validateFrameBinding, type SourceFrameRegistry } from "./source-frames";
 
 /**
@@ -66,7 +67,16 @@ export type PlacementPlan = {
   sourceArtifacts: { matchArtifactId: string; sceneArtifactId: string; titleId: string };
   scene: { sceneId: string; name: string; startSeconds: number; endSeconds: number };
   product: { campaignId: string; product: string; format: string };
-  placement: { region: string; motion: "stationary"; handInteraction: "none"; description: string };
+  placement: {
+    region: string;
+    motion: "stationary";
+    handInteraction: "none";
+    description: string;
+    /** LUV Daybreak from v3: rebrand the existing cups instead of inserting one (placement-strategy.ts). */
+    mode?: typeof REBRAND_MODE;
+  };
+  /** Present only for the rebrand strategy: the existing cups and what may change about them. */
+  rebrand?: RebrandSpec;
   guidance: { scale: string; perspective: string; lighting: string; shadow: string; colorMatch: string };
   preservation: { faces: string[]; bodies: string[]; background: string[]; composition: string[] };
   brandLegibility: string[];
@@ -288,6 +298,9 @@ export function validatePlacementPlan(input: unknown, expectedCaseId?: string, f
     e.push('Both prompts must state "no hand interaction".');
   }
   if (!/stationary/i.test(String(motion.prompt ?? ""))) e.push("The motion prompt must keep the product stationary.");
+  // Campaign- and scene-specific strategy (narrow): LUV Daybreak rebrands the two existing cups.
+  if (rebrandApplies(p)) e.push(...validateRebrand(p, affirmed));
+  else if (placement.mode !== undefined || p.rebrand !== undefined) e.push("Only the LUV Daybreak campaign scene uses the rebrand placement mode.");
   for (const s of generationClaims(text)) e.push(`The plan must not claim generation happened: "${s.slice(0, 120)}"`);
   return e;
 }
