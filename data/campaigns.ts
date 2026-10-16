@@ -70,7 +70,7 @@ export const campaigns: readonly Campaign[] = Object.freeze([
     assumptions: [
       "Audience rules are defined but not yet applied to subscriber records; no viewers have been counted or targeted.",
       "The title is assumed to be available in the United States; the catalogue has no territory metadata yet.",
-      "The cup must stay stationary on the desk with no hand interaction, matching the demo-safety rules.",
+      "The cup must stay stationary on the clear front-right region of the café tabletop, right of the woman's existing cup and toward the near edge, with no contact with either actor, their hands, the two existing cups, or the pastry, matching the demo-safety rules.",
       "Brand recall, viewer acceptance, and generation quality are unknown until later stages; nothing here predicts them.",
     ],
     source: "demo-fixture",
