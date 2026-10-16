@@ -26,6 +26,12 @@ import type { VideoProbe } from "@/agents/media/mp4-validate";
 import { buildLuvRebrandPlanV3, buildRevisedPlan, LUV_PLAN_V2 } from "@/agents/media/plan-revisions";
 import { executeStillEdit } from "@/agents/media/still-edit";
 import { recordVisualReview } from "@/agents/media/visual-review";
+import { validateGovernorReview } from "@/agents/handoff/governor-review";
+import { evaluatePreviewEvidence } from "@/agents/media/preview-evidence";
+import { PersistentSourceFrameRegistry } from "@/agents/persistence/source-frames";
+import { PersistentPreviewRegistry } from "@/agents/persistence/workflow";
+import { AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
+import { toolsForRole } from "@/agents/tools/evidence-tools";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { validPlacementPlan } from "./fixtures";
@@ -438,5 +444,106 @@ describe("human visual review of a Reactor generated preview", () => {
     assert.ok(r.ok && r.status === "created", JSON.stringify(r));
     assert.equal(r.review.asset_checksum, (await w.store.getMediaAsset(id))!.checksum);
     assert.equal((await recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: "approved", reasons: [], reviewer: OWNER, ownerUserId: OWNER.id })).ok, false, "immutable");
+  });
+});
+
+describe("Release Governor preview evidence (preview-visual-quality)", () => {
+  /** A world with the Reactor preview registered, optionally with the owner's visual review of it. */
+  async function registered(review?: "approved" | "rejected") {
+    const w = await world();
+    const created = await executeMotionPreview(w.req, w.deps());
+    assert.ok(created.ok, JSON.stringify(created));
+    const id = w.req.outputAssetId;
+    if (review) {
+      const r = await recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: review, reasons: ["Owner decision."], reviewer: OWNER, ownerUserId: OWNER.id });
+      assert.ok(r.ok, JSON.stringify(r));
+    }
+    const evidence = () => evaluatePreviewEvidence({ workflow: w.workflow, store: w.store, storage: w.storage }, w.v3.planId);
+    return { ...w, id, row: (await w.store.getMediaAsset(id))!, evidence };
+  }
+
+  it("is not-evaluated only when no preview is registered", async () => {
+    const w = await world();
+    const e = await evaluatePreviewEvidence({ workflow: w.workflow, store: w.store, storage: w.storage }, w.v3.planId);
+    assert.deepEqual([e.outcome, e.assetId, e.checksum, e.visualReviewId], ["not-evaluated", null, null, null]);
+  });
+
+  it("passes for a revalidated preview with an approved review of its exact asset and checksum", async () => {
+    const w = await registered("approved");
+    const e = await w.evidence();
+    assert.equal(e.outcome, "pass", e.detail);
+    assert.deepEqual([e.assetId, e.checksum, e.visualReviewId], [w.id, w.row.checksum, (await w.store.getVisualReview(w.id))!.review_id]);
+  });
+
+  it("fails without a review, with a rejected review, or with a review naming other bytes or another asset", async () => {
+    assert.match((await (await registered()).evidence()).detail, /no recorded human visual review/);
+    assert.equal((await (await registered()).evidence()).outcome, "fail", "missing review");
+    const rejected = await (await registered("rejected")).evidence();
+    assert.equal(rejected.outcome, "fail", "rejected review");
+    assert.match(rejected.detail, /"rejected"/);
+
+    // Mismatches the store itself refuses on insert, injected directly to prove the check does not trust the row.
+    const w = await registered("approved");
+    const good = (await w.store.getVisualReview(w.id))!;
+    w.store.visualReviews.set(w.id, { ...good, asset_checksum: `sha256:${"0".repeat(64)}` });
+    assert.equal((await w.evidence()).outcome, "fail", "review names other bytes");
+    w.store.visualReviews.set(w.id, { ...good, asset_id: "asset:luv-hypothesis:edited-still:luv-scene-1:v3" });
+    assert.equal((await w.evidence()).outcome, "fail", "review names another asset");
+    w.store.visualReviews.set(w.id, { ...good, case_id: "NF-DEMO-PRO-0001" });
+    assert.equal((await w.evidence()).outcome, "fail", "review in another case");
+    w.store.visualReviews.set(w.id, good);
+    assert.equal((await w.evidence()).outcome, "pass", "restored");
+  });
+
+  it("fails when the private bytes differ, storage is unavailable, or the preview cannot be chosen", async () => {
+    const w = await registered("approved");
+    const bytes = w.storage.objects.get(w.req.outputStorageRef)!;
+    w.storage.objects.set(w.req.outputStorageRef, new Uint8Array([7]));
+    const altered = await w.evidence();
+    assert.equal(altered.outcome, "fail", "altered bytes");
+    assert.match(altered.detail, /does not revalidate/);
+    w.storage.objects.delete(w.req.outputStorageRef);
+    assert.equal((await w.evidence()).outcome, "fail", "missing object");
+    w.storage.objects.set(w.req.outputStorageRef, bytes);
+    assert.equal((await evaluatePreviewEvidence({ workflow: w.workflow, store: w.store }, w.v3.planId)).outcome, "fail", "no storage to check the bytes");
+    assert.equal((await w.evidence()).outcome, "pass", "restored");
+    await w.store.insertMediaAsset({ ...w.row, asset_id: `${w.id}-other`, storage_ref: `${w.row.storage_ref}.other` });
+    assert.equal((await w.evidence()).outcome, "fail", "two previews: never choose");
+  });
+
+  it("drives the Governor's technical check, and a review copying the tool results verbatim validates", async () => {
+    const w = await registered("approved");
+    const previews = new PersistentPreviewRegistry(w.workflow);
+    await previews.refresh(w.v3.planId);
+    const frames = new PersistentSourceFrameRegistry(w.workflow);
+    await frames.refreshScene(CASE, "luv-scene-1");
+    const toolsWith = (previewEvidence?: (planId: string) => ReturnType<typeof w.evidence>) =>
+      toolsForRole("release-governor", { plans: new AcceptedPlanRegistry(w.workflow), previews, frames, ...(previewEvidence ? { previewEvidence } : {}) });
+    type CheckResult = { checks: { id: string; category: "policy" | "technical"; outcome: "pass" | "fail" | "not-evaluated"; detail: string }[]; source: string };
+    const run = async (tools: ReturnType<typeof toolsWith>) => (await tools.find((t) => t.name === "nativeframe_check_placement_plan")!.handler({ planId: w.v3.planId })) as CheckResult;
+
+    const unverified = (await run(toolsWith())).checks.find((c) => c.id === "preview-visual-quality")!;
+    assert.equal(unverified.outcome, "fail", "a registered preview without an evidence source fails closed");
+    const result = await run(toolsWith(() => w.evidence()));
+    assert.ok(result.checks.every((c) => c.outcome === "pass"), JSON.stringify(result.checks));
+    assert.ok(!/No generated preview exists/.test(JSON.stringify(result)), "no stale wording");
+
+    const status = (await toolsWith().find((t) => t.name === "nativeframe_get_preview_status")!.handler({ planId: w.v3.planId })) as Record<string, unknown>;
+    assert.equal(status.previewExists, true);
+    const review = {
+      kind: "governor-review", version: 1, reviewId: `review:${w.v3.planId}:r1`, caseId: CASE,
+      subject: { titleId: "luv-hypothesis", sceneId: "luv-scene-1", campaignId: "daybreak-cold-brew", planId: w.v3.planId },
+      decision: "approve-for-human-review",
+      hhh: { helpful: { outcome: "pass", rationale: "Actionable." }, honest: { outcome: "pass", rationale: "Cites tools." }, harmless: { outcome: "pass", rationale: "No veto." } },
+      checks: result.checks.map((c) => ({ ...c, source: `nativeframe_check_placement_plan.checks[${c.id}]` })),
+      evidence: [{ claim: result.source, source: "nativeframe_check_placement_plan.source" }],
+      blockers: [], corrections: [], assumptions: ["Demo fixtures."], uncertainty: "Human approval is still required.",
+      preview: { status: "provided", assetRef: status.assetRef, provenance: status.provenance, generationMetadata: status.generationMetadata },
+      humanApproval: { status: "pending" },
+    };
+    const ctx = { caseId: CASE, decision: review.decision, artifactId: w.v3.planId };
+    assert.deepEqual(validateGovernorReview(review, ctx, previews), [], "the tool's wording passes every honesty rule");
+    const downgraded = { ...review, checks: review.checks.map((c) => (c.id === "preview-visual-quality" ? { ...c, outcome: "not-evaluated" } : c)) };
+    assert.ok(validateGovernorReview(downgraded, ctx, previews).some((e) => /every check/.test(e)), "approval still requires the technical pass");
   });
 });

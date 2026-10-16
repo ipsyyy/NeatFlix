@@ -301,6 +301,20 @@ describe("Release Governor tools and prompt", () => {
     assert.equal(((await check.handler({ planId: "plan:never-received:v1" })) as { found: boolean }).found, false, "only authenticated plans");
   });
 
+  it("fails the preview technical check closed when a preview is registered but no verified evidence source is configured", async () => {
+    const check = toolsForRole("release-governor", { previews: FUTURE_PREVIEWS }).find((t) => t.name === "nativeframe_check_placement_plan")!;
+    await recordAcceptedPlan(validPlacementPlan());
+    const r = (await check.handler({ planId: PLAN_ID })) as { checks: { id: string; outcome: string }[] };
+    assert.equal(r.checks.find((c) => c.id === "preview-visual-quality")?.outcome, "fail");
+    const passing = toolsForRole("release-governor", {
+      previews: FUTURE_PREVIEWS,
+      previewEvidence: async () => ({ outcome: "pass", detail: "Verified.", assetId: "a", checksum: `sha256:${"1".repeat(64)}`, visualReviewId: "v" }),
+    }).find((t) => t.name === "nativeframe_check_placement_plan")!;
+    const p = (await passing.handler({ planId: PLAN_ID })) as { checks: { id: string; outcome: string }[]; preview: { visualReviewId: string } };
+    assert.equal(p.checks.find((c) => c.id === "preview-visual-quality")?.outcome, "pass", "the evidence source decides");
+    assert.equal(p.preview.visualReviewId, "v");
+  });
+
   it("reports that no generated preview exists", async () => {
     const status = tools.find((t) => t.name === "nativeframe_get_preview_status")!;
     const r = (await status.handler({ planId: PLAN_ID })) as Record<string, unknown>;
@@ -313,6 +327,10 @@ describe("Release Governor tools and prompt", () => {
     const prompt = buildSystemPrompt("release-governor", { humanOnlyMentions: true });
     assert.match(prompt, /generate-preview/);
     assert.match(prompt, /Mention only the human User/);
+    assert.match(prompt, /never upgrade an outcome/);
+    assert.match(prompt, /preview-visual-quality technical check passes only when/);
+    assert.match(prompt, /"status":"provided","assetRef":<its assetRef>/);
+    assert.ok(!/The current visual is approved title artwork used as a stand-in/.test(prompt), "no stale stand-in assertion in the Governor prompt");
     assert.ok(!buildSystemPrompt("release-governor").includes("## Mentions in this run"));
   });
 });

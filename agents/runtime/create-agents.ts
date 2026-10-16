@@ -5,6 +5,7 @@ import type { BandUrls, RoleCredentials } from "@/agents/config/env";
 import type { AgentRole } from "@/agents/config/roles";
 import { bandClientFor } from "@/agents/band/case-room";
 import { NO_GENERATED_PREVIEWS } from "@/agents/handoff/governor-review";
+import type { PreviewEvidenceSource } from "@/agents/media/preview-evidence";
 import { PersistentSourceFrameRegistry } from "@/agents/persistence/source-frames";
 import { PersistentPreviewRegistry, type WorkflowRegistry } from "@/agents/persistence/workflow";
 import { toolsForRole } from "@/agents/tools/evidence-tools";
@@ -50,6 +51,11 @@ export function createNativeFrameAgents(options: {
    * preview registry is NO_GENERATED_PREVIEWS.
    */
   workflow?: WorkflowRegistry;
+  /**
+   * Verified preview evidence for the Release Governor's preview technical
+   * check (server-only). Without it, a registered preview fails that check.
+   */
+  previewEvidence?: PreviewEvidenceSource;
 }): NativeFrameAgent[] {
   const roleByAgentId = new Map(options.credentials.map((c) => [c.agentId, c.role] as const));
   const wanted = options.roles ?? options.credentials.map((c) => c.role);
@@ -78,7 +84,7 @@ export function createNativeFrameAgents(options: {
         ...turnLimitsFor(role),
         systemPrompt: buildSystemPrompt(role, { humanOnlyMentions: options.mentionHumanOnly === true }),
         // Audit which evidence tools the model used (tool name only, never arguments or results).
-        customTools: toolsForRole(role, { plans, previews, frames }).map((tool) => ({
+        customTools: toolsForRole(role, { plans, previews, frames, ...(governor && options.previewEvidence ? { previewEvidence: options.previewEvidence } : {}) }).map((tool) => ({
           ...tool,
           handler: (args: Record<string, unknown>) => {
             logger.info("Evidence tool called", { tool: tool.name });

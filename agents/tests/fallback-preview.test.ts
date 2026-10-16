@@ -29,6 +29,7 @@ import type { ImageEditProvider } from "@/agents/media/gemini-provider";
 import { executeMotionPreview, type AttemptLedger, type MotionPreviewProvider } from "@/agents/media/motion-preview";
 import { buildLuvRebrandPlanV3, buildRevisedPlan, LUV_PLAN_V2 } from "@/agents/media/plan-revisions";
 import { executeStillEdit } from "@/agents/media/still-edit";
+import { evaluatePreviewEvidence } from "@/agents/media/preview-evidence";
 import { currentVisualDecision, recordVisualReview } from "@/agents/media/visual-review";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
@@ -350,11 +351,15 @@ describe("fallback preview: deterministic generation (local FFmpeg)", { skip: ha
     assert.equal((await reviewOf({ reviewer: { ...OWNER, type: "Agent" } })).ok, false, "a human only");
     assert.equal((await reviewOf({ assetId: w.req.reservedReactorAssetId })).ok, false, "an unregistered preview cannot be reviewed");
     assert.equal(await w.store.getVisualReview(id), null, "nothing written by refused reviews");
+    const evidence = () => evaluatePreviewEvidence({ workflow: w.workflow, store: w.store, storage: w.storage }, w.v3.planId);
+    assert.equal((await evidence()).outcome, "fail", "the Governor's technical check fails until the owner's review exists");
 
     const r = await reviewOf();
     assert.ok(r.ok && r.status === "created", JSON.stringify(r));
     assert.deepEqual([r.review.asset_id, r.review.decision, r.review.asset_checksum, r.review.case_id, r.review.reviewer_user_id], [id, "approved", row.checksum, CASE, OWNER.id]);
     assert.equal(await currentVisualDecision(w.store, id), "approved");
+    const passed = await evidence();
+    assert.deepEqual([passed.outcome, passed.assetId, passed.checksum, passed.visualReviewId], ["pass", id, row.checksum, r.review.review_id], passed.detail);
     const replay = await reviewOf();
     assert.ok(replay.ok && replay.status === "existing" && replay.review.review_id === r.review.review_id, "an identical replay returns the same review");
     assert.equal((await reviewOf({ decision: "rejected", reasons: ["Changed."] })).ok, false, "reviews are immutable");

@@ -51,8 +51,8 @@ export type PreviewRecord = {
 export type PreviewRegistry = { find(planId: string): PreviewRecord | null };
 
 /**
- * The preview registry in use today. No media-generation pipeline is connected,
- * so no plan has a generated preview and no review can be approved.
+ * The empty preview registry, used when no persistent registry is configured:
+ * no plan has a generated preview, so no review can be approved.
  */
 export const NO_GENERATED_PREVIEWS: PreviewRegistry = Object.freeze({ find: () => null });
 

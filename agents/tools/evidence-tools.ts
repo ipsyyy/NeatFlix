@@ -7,6 +7,7 @@ import { NO_GENERATED_PREVIEWS, type PreviewRegistry } from "@/agents/handoff/go
 import { validatePlacementPlan } from "@/agents/handoff/placement-plan";
 import { NO_REGISTERED_SOURCE_FRAMES, SOURCE_FRAME_DISCLOSURE, type RefreshableSourceFrameRegistry, type SourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { validateDraft } from "@/agents/handoff/stamp";
+import { NO_PREVIEW_DETAIL, type PreviewEvidence, type PreviewEvidenceSource } from "@/agents/media/preview-evidence";
 import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
 import { currentTurnScope } from "@/agents/runtime/turn-scope";
 import { campaigns } from "@/data/campaigns";
@@ -240,15 +241,27 @@ function validateHandoffTool(previews: PreviewRegistry = NO_GENERATED_PREVIEWS, 
 }
 
 /**
- * Release Governor: re-runs NativeFrame's deterministic rules over the plan in
- * the Placement Director handoff. Visual checks are "not-evaluated" because no
- * generated preview exists to inspect.
+ * The preview technical check. Without a verified evidence source a registered
+ * preview can never pass: it fails closed. Not-evaluated only without a preview.
  */
-function checkPlacementPlanTool(plans: AcceptedPlanRegistry, frames: SourceFrameRegistry): CustomToolDef {
+async function previewCheck(planId: string, previews: PreviewRegistry, evidence?: PreviewEvidenceSource): Promise<PreviewEvidence> {
+  if (evidence) return evidence(planId);
+  return previews.find(planId)
+    ? { outcome: "fail", detail: "A generated preview is registered for this plan, but no verified evidence source is configured, so it is not evidence.", assetId: null, checksum: null, visualReviewId: null }
+    : { outcome: "not-evaluated", detail: NO_PREVIEW_DETAIL, assetId: null, checksum: null, visualReviewId: null };
+}
+
+/**
+ * Release Governor: re-runs NativeFrame's deterministic rules over the plan in
+ * the Placement Director handoff, and reports the preview technical check from
+ * verified evidence: the registered preview's revalidation and the human
+ * owner's recorded visual review of its exact bytes.
+ */
+function checkPlacementPlanTool(plans: AcceptedPlanRegistry, frames: SourceFrameRegistry, previews: PreviewRegistry, evidence?: PreviewEvidenceSource): CustomToolDef {
   return {
     name: "nativeframe_check_placement_plan",
     description:
-      "Run NativeFrame's deterministic policy checks over the placement plan you received from the authenticated Placement Director, looked up by its planId: plan schema and safety rules, title eligibility, scene guardrails, campaign match, and unexecuted prompts. Visual checks are reported as not-evaluated because no generated preview exists.",
+      "Run NativeFrame's deterministic checks over the placement plan you received from the authenticated Placement Director, looked up by its planId: plan schema and safety rules, title eligibility, scene guardrails, campaign match, and unexecuted prompts; plus the preview-visual-quality technical check, which passes only when the plan's registered generated preview revalidates and the human owner's recorded visual review of its exact bytes is approved, and is not-evaluated when no preview is registered.",
     schema: z.object({ planId: z.string().min(1).max(200).describe("The planId (handoff artifactId) from the Placement Director handoff") }),
     handler: async (args) => {
       const accepted = await plans.lookup(String(args.planId).trim());
@@ -267,9 +280,11 @@ function checkPlacementPlanTool(plans: AcceptedPlanRegistry, frames: SourceFrame
       const unexecuted = ["stillImageEdit", "motion"].every((k) => get(get(prompts, k), "status") === "not-executed");
       const eligible = title ? getEligibility(title).eligible && canStartPlacementReview(title) : false;
       const outcome = (ok: boolean) => (ok ? "pass" : "fail");
+      const preview = await previewCheck(String(plan.planId ?? ""), previews, evidence);
       return {
         found: true,
-        source: "Deterministic NativeFrame rules over the authenticated Placement Director plan and demo fixtures. No generated preview exists, so nothing visual was inspected.",
+        source:
+          "Deterministic NativeFrame rules over the authenticated Placement Director plan and demo fixtures, plus the media registry's revalidation of the plan's generated preview and the human owner's recorded visual review. The Release Governor does not view media itself.",
         subject: { titleId, sceneId, campaignId, planId: plan.planId ?? null },
         checks: [
           { id: "plan-rules", category: "policy", outcome: outcome(planErrors.length === 0), detail: planErrors.length === 0 ? "Plan meets every schema and safety rule." : planErrors.slice(0, 10).join(" ") },
@@ -277,8 +292,9 @@ function checkPlacementPlanTool(plans: AcceptedPlanRegistry, frames: SourceFrame
           { id: "scene-guardrails", category: "policy", outcome: outcome(Boolean(found?.scene.checks.every((c) => c.outcome === "pass"))), detail: found ? found.scene.checks.map((c) => `${c.id}: ${c.outcome}`).join("; ") : "Unknown scene." },
           { id: "campaign-match", category: "policy", outcome: outcome(match?.decision === "recommended"), detail: match ? `${match.decision}: ${match.summary}` : "Unknown scene or campaign." },
           { id: "prompts-not-executed", category: "policy", outcome: outcome(unexecuted), detail: unexecuted ? "Both generation prompts are labelled not-executed." : "A generation prompt is not labelled not-executed." },
-          { id: "preview-visual-quality", category: "technical", outcome: "not-evaluated", detail: "No generated preview exists, so visual quality, naturalness, and preservation of faces and composition cannot be evaluated." },
+          { id: "preview-visual-quality", category: "technical", outcome: preview.outcome, detail: preview.detail },
         ],
+        preview: { assetId: preview.assetId, checksum: preview.checksum, visualReviewId: preview.visualReviewId },
       };
     },
   };
@@ -296,13 +312,13 @@ export function previewStatusTool(previews: PreviewRegistry = NO_GENERATED_PREVI
       if (!record) {
         return {
           found: true,
-          source: "NativeFrame preview registry. No media-generation pipeline is connected.",
+          source: "NativeFrame preview registry.",
           planId: String(args.planId).trim(),
           previewExists: false,
           assetRef: null,
           provenance: null,
           generationMetadata: null,
-          note: "No generated preview exists for this plan. No media-generation service has run, so there is nothing to inspect.",
+          note: "No generated preview is registered for this plan, so there is nothing to evaluate.",
         };
       }
       return { found: true, source: "NativeFrame preview registry.", previewExists: true, ...record };
@@ -311,10 +327,11 @@ export function previewStatusTool(previews: PreviewRegistry = NO_GENERATED_PREVI
 }
 
 /**
- * Stores the Release Governor's tools read from: plans accepted at its gate and
- * the preview registry. Defaults hold no persisted data and no previews.
+ * Stores the Release Governor's tools read from: plans accepted at its gate, the
+ * preview registry, and the verified preview evidence source. Defaults hold no
+ * persisted data, no previews, and no evidence source.
  */
-export type GovernorToolStores = { plans?: AcceptedPlanRegistry; previews?: PreviewRegistry; frames?: RefreshableSourceFrameRegistry };
+export type GovernorToolStores = { plans?: AcceptedPlanRegistry; previews?: PreviewRegistry; frames?: RefreshableSourceFrameRegistry; previewEvidence?: PreviewEvidenceSource };
 
 /** The only answer for a case or scene outside the current authenticated handoff; it reveals nothing about them. */
 export const FRAME_NOT_AVAILABLE = { found: false, status: "not-available", message: "Not available for this handoff." } as const;
@@ -380,7 +397,7 @@ export function toolsForRole(role: AgentRole, stores: GovernorToolStores = {}): 
       return [getSelectedScene, getCampaign, getSourceArtwork, sourceFrameTool(stores.frames), validateHandoffTool(NO_GENERATED_PREVIEWS, stores.frames)];
     case "release-governor": {
       const previews = stores.previews ?? NO_GENERATED_PREVIEWS;
-      return [checkPlacementPlanTool(stores.plans ?? inMemoryAcceptedPlans, stores.frames ?? NO_REGISTERED_SOURCE_FRAMES), previewStatusTool(previews), validateHandoffTool(previews)];
+      return [checkPlacementPlanTool(stores.plans ?? inMemoryAcceptedPlans, stores.frames ?? NO_REGISTERED_SOURCE_FRAMES, previews, stores.previewEvidence), previewStatusTool(previews), validateHandoffTool(previews)];
     }
     default:
       return [validateHandoffTool()];

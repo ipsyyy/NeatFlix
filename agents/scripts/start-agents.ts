@@ -18,6 +18,8 @@ import {
 } from "@/agents/config/env";
 import { AGENT_MODEL } from "@/agents/config/model";
 import { AGENT_REGISTRY } from "@/agents/config/roles";
+import { evaluatePreviewEvidence } from "@/agents/media/preview-evidence";
+import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
 import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { createNativeFrameAgents, type NativeFrameAgent } from "@/agents/runtime/create-agents";
@@ -53,10 +55,16 @@ async function main(): Promise<number> {
   const store = createWorkflowStoreFromEnv(process.env);
   console.log(store ? "Workflow registry: Supabase (server-only)" : "Workflow registry: not configured; nothing is persisted and no previews exist");
 
+  // Release Governor's preview evidence: needs the registry and private storage to revalidate preview bytes.
+  const storage = createPrivateStorageFromEnv(process.env);
+  const workflow = store ? new WorkflowRegistry(store) : null;
+  const previewEvidence = workflow && store && storage ? (planId: string) => evaluatePreviewEvidence({ workflow, store, storage }, planId) : null;
+
   let agents: NativeFrameAgent[];
   try {
     agents = createNativeFrameAgents({
-      ...(store ? { workflow: new WorkflowRegistry(store) } : {}),
+      ...(workflow ? { workflow } : {}),
+      ...(previewEvidence ? { previewEvidence } : {}),
       credentials: readAllCredentials(process.env),
       urls: readBandUrls(process.env),
       anthropicApiKey: readAnthropicKey(process.env),
