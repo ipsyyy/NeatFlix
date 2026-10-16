@@ -423,3 +423,20 @@ describe("file attempt ledger", () => {
   });
 });
 
+describe("human visual review of a Reactor generated preview", () => {
+  it("records one immutable review of a revalidated Reactor preview, and refuses tampered bytes", async () => {
+    const w = await world();
+    const created = await executeMotionPreview(w.req, w.deps());
+    assert.ok(created.ok, JSON.stringify(created));
+    const id = w.req.outputAssetId;
+    const reviewOf = () => recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: "rejected", reasons: ["Actor identity drifts."], reviewer: OWNER, ownerUserId: OWNER.id });
+    const bytes = w.storage.objects.get(w.req.outputStorageRef)!;
+    w.storage.objects.set(w.req.outputStorageRef, new Uint8Array([1]));
+    assert.equal((await reviewOf()).ok, false, "tampered stored bytes");
+    w.storage.objects.set(w.req.outputStorageRef, bytes);
+    const r = await reviewOf();
+    assert.ok(r.ok && r.status === "created", JSON.stringify(r));
+    assert.equal(r.review.asset_checksum, (await w.store.getMediaAsset(id))!.checksum);
+    assert.equal((await recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: "approved", reasons: [], reviewer: OWNER, ownerUserId: OWNER.id })).ok, false, "immutable");
+  });
+});

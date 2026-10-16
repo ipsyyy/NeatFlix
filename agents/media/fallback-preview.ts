@@ -276,7 +276,7 @@ export function identityProblems(req: FallbackRequest): string[] {
 }
 
 /** Validates a fallback row against its exact binding, before writing and on every read. */
-export function validateFallbackRow(row: unknown, req: FallbackRequest, caseId: string): string[] {
+export function validateFallbackRow(row: unknown, req: Omit<FallbackRequest, "reservedReactorAssetId" | "reservedReactorStorageRef">, caseId: string): string[] {
   if (!isObj(row)) return ["Fallback preview must be an object."];
   const p = isObj(row.provenance) ? row.provenance : {};
   const e: string[] = [];

@@ -29,7 +29,7 @@ import type { ImageEditProvider } from "@/agents/media/gemini-provider";
 import { executeMotionPreview, type AttemptLedger, type MotionPreviewProvider } from "@/agents/media/motion-preview";
 import { buildLuvRebrandPlanV3, buildRevisedPlan, LUV_PLAN_V2 } from "@/agents/media/plan-revisions";
 import { executeStillEdit } from "@/agents/media/still-edit";
-import { recordVisualReview } from "@/agents/media/visual-review";
+import { currentVisualDecision, recordVisualReview } from "@/agents/media/visual-review";
 import type { PrivateStorage } from "@/agents/persistence/private-storage";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { validPlacementPlan } from "./fixtures";
@@ -335,5 +335,61 @@ describe("fallback preview: deterministic generation (local FFmpeg)", { skip: ha
     const r = await executeFallbackPreview(w.req, w);
     assert.equal(r.ok, false);
     assert.equal((r as { stage: string }).stage, "idempotency");
+  });
+  it("records one immutable human visual review of the registered fallback, revalidating every binding", async () => {
+    const w = await world();
+    w.storage.objects.set(w.req.outputStorageRef, created!.bytes);
+    assert.ok((await executeFallbackPreview(w.req, w)).ok);
+    const id = w.req.outputAssetId;
+    const row = (await w.store.getMediaAsset(id))!;
+    const reviewOf = (over: Partial<Parameters<typeof recordVisualReview>[0]> = {}) =>
+      recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: "approved", reasons: ["Disclosed local fallback."], reviewer: OWNER, ownerUserId: OWNER.id, ...over });
+
+    assert.equal((await reviewOf({ storage: undefined })).ok, false, "a preview's private bytes must be revalidated");
+    assert.equal((await reviewOf({ reviewer: { ...OWNER, id: "someone-else" } })).ok, false, "the human owner only");
+    assert.equal((await reviewOf({ reviewer: { ...OWNER, type: "Agent" } })).ok, false, "a human only");
+    assert.equal((await reviewOf({ assetId: w.req.reservedReactorAssetId })).ok, false, "an unregistered preview cannot be reviewed");
+    assert.equal(await w.store.getVisualReview(id), null, "nothing written by refused reviews");
+
+    const r = await reviewOf();
+    assert.ok(r.ok && r.status === "created", JSON.stringify(r));
+    assert.deepEqual([r.review.asset_id, r.review.decision, r.review.asset_checksum, r.review.case_id, r.review.reviewer_user_id], [id, "approved", row.checksum, CASE, OWNER.id]);
+    assert.equal(await currentVisualDecision(w.store, id), "approved");
+    const replay = await reviewOf();
+    assert.ok(replay.ok && replay.status === "existing" && replay.review.review_id === r.review.review_id, "an identical replay returns the same review");
+    assert.equal((await reviewOf({ decision: "rejected", reasons: ["Changed."] })).ok, false, "reviews are immutable");
+    await assert.rejects(w.store.updateMediaAsset(id, { duration_seconds: 3.6 }), "a reviewed asset is immutable");
+    assert.deepEqual(await w.store.getMediaAsset(id), row, "the asset record is unchanged");
+    assert.equal((row.provenance as FallbackProvenance).humanVisualReview, "pending", "generation-time provenance is never rewritten");
+    assert.equal(await w.store.getMediaAsset(w.req.reservedReactorAssetId), null, "the Reactor identity stays unused");
+    assert.equal(await w.store.getVisualReview(w.req.reservedReactorAssetId), null);
+  });
+
+  it("refuses to review a fallback whose bytes or bindings no longer revalidate", async () => {
+    const w = await world();
+    w.storage.objects.set(w.req.outputStorageRef, created!.bytes);
+    assert.ok((await executeFallbackPreview(w.req, w)).ok);
+    const id = w.req.outputAssetId;
+    const row = (await w.store.getMediaAsset(id))!;
+    const p = row.provenance as FallbackProvenance;
+    const reviewOf = () => recordVisualReview({ workflow: w.workflow, store: w.store, storage: w.storage, assetId: id, decision: "approved", reasons: [], reviewer: OWNER, ownerUserId: OWNER.id });
+    const tampered: [string, Partial<typeof row>][] = [
+      ["source still checksum", { provenance: { ...p, sourceEditedStill: { ...p.sourceEditedStill, checksum: `sha256:${"0".repeat(64)}` } } }],
+      ["source still review", { provenance: { ...p, visualReview: { ...p.visualReview, reviewId: "another-review" } } }],
+      ["motion prompt", { provenance: { ...p, motionPromptSha256: "0".repeat(64) } }],
+      ["another plan", { plan_id: "plan:daybreak-cold-brew:luv-scene-1:v2" }],
+      ["unknown generator", { generator: "something-else" }],
+      ["not a fallback", { provenance: { ...p, fallback: false } }],
+    ];
+    for (const [name, patch] of tampered) {
+      await w.store.updateMediaAsset(id, patch);
+      assert.equal((await reviewOf()).ok, false, name);
+      await w.store.updateMediaAsset(id, row);
+    }
+    w.storage.objects.set(w.req.outputStorageRef, new Uint8Array([9]));
+    assert.equal((await reviewOf()).ok, false, "tampered stored bytes");
+    assert.equal(await w.store.getVisualReview(id), null, "no review was recorded");
+    w.storage.objects.set(w.req.outputStorageRef, created!.bytes);
+    assert.ok((await reviewOf()).ok, "the restored, untampered fallback is reviewable");
   });
 });

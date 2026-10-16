@@ -1,7 +1,7 @@
 /**
  * Bounded command: records the project owner's human visual review of one
- * explicitly named, registered edited still (append-only; the asset's own
- * record is never changed). Without --record it only verifies (read-only).
+ * explicitly named, registered edited still or generated preview
+ * (append-only; the asset's own record is never changed). Without --record it only verifies (read-only).
  * The reviewer is the human owner of the NativeFrame BAND agents, read with a
  * read-only identity lookup; no agent is started.
  *
@@ -10,8 +10,8 @@
  */
 import { bandClientFor } from "@/agents/band/case-room";
 import { collectSecrets, loadLocalEnv, readAllCredentials, readBandUrls } from "@/agents/config/env";
-import { loadVerifiedEditedStill } from "@/agents/media/edited-still";
-import { currentVisualDecision, parseReviewArgs, recordVisualReview } from "@/agents/media/visual-review";
+import { currentVisualDecision, loadReviewableAsset, parseReviewArgs, recordVisualReview } from "@/agents/media/visual-review";
+import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
 import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store";
 import { WorkflowRegistry } from "@/agents/persistence/workflow";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
@@ -23,10 +23,11 @@ async function main(): Promise<number> {
   if (!args.ok) return (out(`${args.errors.join(" ")} Nothing was done.`), 1);
   const { assetId, decision, reasons, record } = args.value;
   const store = createWorkflowStoreFromEnv(process.env);
-  if (!store) return (out("Supabase is not configured. Nothing was done."), 1);
+  const storage = createPrivateStorageFromEnv(process.env);
+  if (!store || !storage) return (out("Supabase is not configured. Nothing was done."), 1);
   const workflow = new WorkflowRegistry(store);
-  const verified = await loadVerifiedEditedStill(workflow, store, assetId);
-  if (!verified.ok) return (out(`${assetId} is not a registered edited still that revalidates. Nothing was done.`), 1);
+  const verified = await loadReviewableAsset({ workflow, store, storage }, assetId);
+  if (!verified.ok) return (out(`${assetId} is not a registered reviewable asset that revalidates: ${verified.errors.slice(0, 3).join("; ")}. Nothing was done.`), 1);
   out(`${assetId} revalidates (case ${verified.row.case_id}, plan ${verified.row.plan_id}, ${verified.row.checksum}); current decision: ${await currentVisualDecision(store, assetId)}`);
   out(`Review to record: ${decision}, ${reasons.length} reason(s).`);
 
@@ -42,6 +43,7 @@ async function main(): Promise<number> {
   const r = await recordVisualReview({
     workflow,
     store,
+    storage,
     assetId,
     decision,
     reasons,

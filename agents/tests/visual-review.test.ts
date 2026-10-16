@@ -225,7 +225,12 @@ describe("reviews for versioned edited stills (v1 and v2)", () => {
     assert.ok(parseReviewArgs([`--asset=${v2}`, "--decision=rejected"]).ok && !(parseReviewArgs([`--asset=${v2}`, "--decision=rejected"]) as { value: { record: boolean } }).value.record, "verify-only without --record");
     assert.equal(parseReviewArgs([`--asset=${v2}`, "--decision=rejected", `--record=${target("v1").outputAssetId}`]).ok, false, "--record must match --asset");
     assert.equal(parseReviewArgs([`--asset=${v2}`, `--asset=${target("v1").outputAssetId}`, "--decision=rejected"]).ok, false, "one asset only");
-    assert.equal(parseReviewArgs(["--asset=asset:luv-hypothesis:source-frame:luv-scene-1:v1", "--decision=rejected"]).ok, false, "edited stills only");
+    assert.equal(parseReviewArgs(["--asset=asset:luv-hypothesis:source-frame:luv-scene-1:v1", "--decision=rejected"]).ok, false, "edited stills or generated previews only");
+    const preview = "asset:luv-hypothesis:generated-preview:luv-scene-1:v3-fallback";
+    assert.ok(parseReviewArgs([`--asset=${preview}`, "--decision=approved", `--record=${preview}`]).ok, "a versioned generated preview");
+    for (const bad of ["asset:luv-hypothesis:generated-preview:luv-scene-1", "asset:luv-hypothesis:generated-preview:luv-scene-1:v3-", "asset:luv-hypothesis:generated-preview:luv-scene-1:v3-Fallback"]) {
+      assert.equal(parseReviewArgs([`--asset=${bad}`, "--decision=approved"]).ok, false, bad);
+    }
     assert.equal(parseReviewArgs([`--asset=${v2}`, "--decision=maybe"]).ok, false);
   });
 });
