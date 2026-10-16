@@ -12,7 +12,9 @@
  * portrait privately, create one avatar (not publicly renderable) from a
  * 5-minute portrait handoff URL, request the one spoken line verbatim, download
  * the result server-side, validate it, and store it privately. Writes the
- * safe-metadata manifest (identifiers only) for every completed identity.
+ * safe-metadata manifest (identifiers only) only when all five identities
+ * complete and validate; a partial batch is recorded separately and every
+ * agent keeps its local fallback.
  * Starts no agent and touches no case, plan, media, review, or approval record.
  *
  * Run (preflight): npm run agents:masky-identities
@@ -32,6 +34,8 @@ import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
 
 const GENERATE_TOKEN = "nativeframe-agent-identities-v1";
 const MANIFEST_PATH = resolve(process.cwd(), "agents/masky/generated-identities.json");
+/** A partial batch is recorded here (its avatars exist at Masky), never in the live manifest: every agent keeps its fallback. */
+const INCOMPLETE_PATH = resolve(process.cwd(), "agents/masky/incomplete-identities.json");
 const MAX_POLLS = 48;
 const POLL_MS = 5_000;
 
@@ -66,7 +70,8 @@ async function main(): Promise<number> {
   const recorded = Object.keys(existing.entries);
   const key = process.env[MASKY_API_KEY_ENV]?.trim() ?? "";
   out(`Masky key (${MASKY_API_KEY_ENV}): ${key ? (MASKY_KEY_FORMAT.test(key) ? "configured, format ok" : "configured, UNEXPECTED FORMAT") : "MISSING"}; Supabase private storage: ${createPrivateStorageFromEnv(process.env) ? "configured" : "MISSING"}.`);
-  out(`Recorded identities: ${recorded.length === 0 ? "none" : recorded.join(", ")}\n`);
+  const incomplete = existsSync(INCOMPLETE_PATH);
+  out(`Recorded identities: ${recorded.length === 0 ? "none" : recorded.join(", ")}${incomplete ? "; an INCOMPLETE batch is recorded" : ""}\n`);
 
   let total = 0;
   for (const role of AGENT_ROLES) {
@@ -99,7 +104,7 @@ async function main(): Promise<number> {
     out(`\nPreflight only: no network request was made. To generate: --generate=${GENERATE_TOKEN}`);
     return 0;
   }
-  if (recorded.length > 0) return (out("Identities are already recorded; this run never creates a second avatar. Nothing was done."), 1);
+  if (recorded.length > 0 || incomplete) return (out("Identities (or an incomplete batch) are already recorded; this run never creates a second batch. Nothing was done."), 1);
   const masky = createMaskyClientFromEnv(process.env);
   const storage = createPrivateStorageFromEnv(process.env);
   if (!masky || !storage) return (out("Masky or Supabase is not configured. Nothing was done."), 1);
@@ -109,16 +114,18 @@ async function main(): Promise<number> {
     { existing, voiceOverrides },
   );
   if (result.voices) out(`\nVoices: ${AGENT_ROLES.map((r) => `${r}=${result.voices![r].name} (${result.voices![r].id})`).join("; ")}`);
-  if (result.completed.length > 0) {
-    writeFileSync(MANIFEST_PATH, `${JSON.stringify(result.manifest, null, 2)}\n`);
-    out(`Wrote ${result.completed.length} identities to agents/masky/generated-identities.json.`);
-  }
-  if (result.failed) {
-    out(`STOPPED at ${result.failed.role} (${result.failed.stage}): ${result.failed.error}`);
-    out("Agents without a recorded identity use the local fallback portrait and caption.");
+  const complete = !result.failed && result.completed.length === AGENT_ROLES.length && validateManifest(result.manifest).length === 0;
+  if (!complete) {
+    if (result.completed.length > 0) {
+      writeFileSync(INCOMPLETE_PATH, `${JSON.stringify(result.manifest, null, 2)}\n`);
+      out(`Recorded the ${result.completed.length} avatar(s) created before the stop in agents/masky/incomplete-identities.json (not used by the demo).`);
+    }
+    out(`STOPPED${result.failed ? ` at ${result.failed.role} (${result.failed.stage}): ${result.failed.error}` : ": the batch did not validate."}`);
+    out("The batch is incomplete: no live manifest was written, and all five agents keep the local fallback portrait and caption.");
     return 1;
   }
-  out("All five identities were created, validated, and stored privately.");
+  writeFileSync(MANIFEST_PATH, `${JSON.stringify(result.manifest, null, 2)}\n`);
+  out("All five identities were created, validated, and stored privately; wrote agents/masky/generated-identities.json.");
   return 0;
 }
 
