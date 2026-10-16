@@ -8,6 +8,7 @@ import { validatePlacementPlan } from "@/agents/handoff/placement-plan";
 import { NO_REGISTERED_SOURCE_FRAMES, SOURCE_FRAME_DISCLOSURE, type RefreshableSourceFrameRegistry, type SourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { validateDraft } from "@/agents/handoff/stamp";
 import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "@/agents/runtime/accepted-plans";
+import { currentTurnScope } from "@/agents/runtime/turn-scope";
 import { campaigns } from "@/data/campaigns";
 import { catalogue } from "@/data/catalogue";
 import { getSceneReview } from "@/data/scene-candidates";
@@ -315,23 +316,31 @@ export function previewStatusTool(previews: PreviewRegistry = NO_GENERATED_PREVI
  */
 export type GovernorToolStores = { plans?: AcceptedPlanRegistry; previews?: PreviewRegistry; frames?: RefreshableSourceFrameRegistry };
 
+/** The only answer for a case or scene outside the current authenticated handoff; it reveals nothing about them. */
+export const FRAME_NOT_AVAILABLE = { found: false, status: "not-available", message: "Not available for this handoff." } as const;
+
 /**
- * Placement Director: looks up the registered, revalidated source frame for a
- * scene. Returns exact binding fields to copy into the plan, says when none is
- * registered (use the stand-in), and blocks when a registered frame is invalid.
+ * Placement Director: looks up the registered, revalidated source frame for
+ * the scene of the authenticated handoff this turn is acting on (turn-scope.ts).
+ * Arguments must name that same case and scene; they never select, refresh, or
+ * reveal any other. Returns exact binding fields to copy into the plan, says
+ * when none is registered (use the stand-in), and blocks when a registered
+ * frame is invalid.
  */
 function sourceFrameTool(frames: RefreshableSourceFrameRegistry | undefined): CustomToolDef {
   return {
     name: "nativeframe_get_source_frame",
     description:
-      "Look up the registered source frame for the selected scene in this case. If one is registered and valid, returns the exact sourceMedia fields to bind in the plan. If none is registered, use the approved title-artwork stand-in. If a registered frame fails validation, the plan must be blocked.",
+      "Look up the registered source frame for the selected scene of the handoff you are acting on (pass its caseId and scene ID). If one is registered and valid, returns the exact sourceMedia fields to bind in the plan. If none is registered, use the approved title-artwork stand-in. If a registered frame fails validation, the plan must be blocked.",
     schema: z.object({
       caseId: z.string().min(1).max(100).describe("The caseId from the handoff"),
       sceneId: z.string().min(1).max(60).describe("The selected scene ID, e.g. luv-scene-1"),
     }),
     handler: async (args) => {
+      const scope = currentTurnScope();
+      if (!scope || String(args.caseId).trim() !== scope.caseId || String(args.sceneId).trim() !== scope.sceneId) return FRAME_NOT_AVAILABLE;
       if (!frames) return { found: false, status: "none", message: "No source-frame registry is configured; use the approved title-artwork stand-in." };
-      const state = await frames.refreshScene(String(args.caseId).trim(), String(args.sceneId).trim());
+      const state = await frames.refreshScene(scope.caseId, scope.sceneId);
       if (state.invalid) {
         return { found: false, status: "invalid", message: "A registered source frame for this scene failed validation. Decide \"blocked\"; do not use the stand-in." };
       }

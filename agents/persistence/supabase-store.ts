@@ -117,18 +117,21 @@ export class SupabaseWorkflowStore implements WorkflowStore {
     return row ? normalizeMedia(row) : null;
   }
 
-  async listMediaAssetsForPlan(planId: string, kind: MediaKind): Promise<MediaAssetRow[]> {
+  async listMediaAssetsForPlan(planId: string, kind: MediaKind, limit: number): Promise<MediaAssetRow[]> {
     const rows = (await this.request("media_assets", {
       method: "GET",
-      query: `plan_id=eq.${encodeURIComponent(planId)}&kind=eq.${encodeURIComponent(kind)}&select=*&order=created_at.desc&limit=20`,
+      query: `plan_id=eq.${encodeURIComponent(planId)}&kind=eq.${encodeURIComponent(kind)}&select=*&order=created_at.desc&limit=${safeLimit(limit)}`,
     })) as MediaAssetRow[] | null;
     return (rows ?? []).map(normalizeMedia);
   }
 
-  async listMediaAssetsForCase(caseId: string, kind: MediaKind): Promise<MediaAssetRow[]> {
+  async listSourceFramesForScene(caseId: string, sceneId: string, limit: number): Promise<MediaAssetRow[]> {
+    // The scene filter runs in the database (JSON path on provenance), not after a capped fetch.
     const rows = (await this.request("media_assets", {
       method: "GET",
-      query: `case_id=eq.${encodeURIComponent(caseId)}&kind=eq.${encodeURIComponent(kind)}&select=*&order=created_at.desc&limit=20`,
+      query:
+        `case_id=eq.${encodeURIComponent(caseId)}&kind=eq.source-frame&provenance->>sceneId=eq.${encodeURIComponent(sceneId)}` +
+        `&select=*&order=created_at.desc&limit=${safeLimit(limit)}`,
     })) as MediaAssetRow[] | null;
     return (rows ?? []).map(normalizeMedia);
   }
@@ -148,6 +151,12 @@ export class SupabaseWorkflowStore implements WorkflowStore {
   getApprovalForReview(reviewId: string): Promise<ApprovalRow | null> {
     return this.one<ApprovalRow>("human_approvals", "review_id", reviewId);
   }
+}
+
+/** A positive integer row limit for a query string. */
+function safeLimit(limit: number): number {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("Invalid lookup limit.");
+  return limit;
 }
 
 /** Postgres numeric columns may arrive as strings; normalize before validation. */

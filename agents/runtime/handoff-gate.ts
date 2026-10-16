@@ -6,6 +6,7 @@ import { checkHandoffTimestamp } from "@/agents/handoff/timestamps";
 import type { HandoffEnvelope, ValidationRegistries } from "@/agents/handoff/envelope";
 import type { RefreshableSourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { inMemoryAcceptedPlans, type AcceptedPlanRegistry } from "./accepted-plans";
+import { handoffScope } from "./turn-scope";
 
 /** Release Governor stores the gate fills: accepted plans, and previews revalidated for them. */
 export type GovernorIntake = {
@@ -14,18 +15,6 @@ export type GovernorIntake = {
   /** Registered source frames, refreshed for the handoff's scene before it is screened. */
   frames?: RefreshableSourceFrameRegistry;
 };
-
-/** The case and scene a handoff concerns: a placement plan's scene, a match's scene, or a review's subject. */
-function handoffScene(value: unknown): { caseId: string; sceneId: string } | null {
-  if (typeof value !== "object" || value === null) return null;
-  const h = value as Record<string, unknown>;
-  if (typeof h.caseId !== "string") return null;
-  const artifact = h.artifact as Record<string, unknown> | undefined;
-  const fromArtifact = (artifact?.scene as Record<string, unknown> | undefined)?.sceneId ?? (artifact?.subject as Record<string, unknown> | undefined)?.sceneId;
-  if (typeof fromArtifact === "string") return { caseId: h.caseId, sceneId: fromArtifact };
-  const match = typeof h.artifactId === "string" ? /^match:[a-z0-9-]+:([a-z0-9-]+)$/.exec(h.artifactId) : null;
-  return match ? { caseId: h.caseId, sceneId: match[1] } : null;
-}
 
 type DefaultProcess = DefaultPreprocessor["process"];
 
@@ -133,7 +122,7 @@ export class HandoffGate {
     // Load the scene's registered source frames first, so plans naming a frame can be checked.
     if (this.intake.frames) {
       const [block] = extractHandoffs(message.content);
-      const target = block?.ok ? handoffScene(block.value) : null;
+      const target = block?.ok ? handoffScope(block.value) : null;
       if (target) await this.intake.frames.refreshScene(target.caseId, target.sceneId);
     }
     const screen = screenIncomingMessage(

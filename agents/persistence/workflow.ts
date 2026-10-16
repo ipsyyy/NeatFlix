@@ -16,6 +16,7 @@ import { getSceneReview } from "@/data/scene-candidates";
 import {
   DuplicateRecordError,
   MEDIA_KINDS,
+  REGISTRY_LOOKUP_CAP,
   type CaseStatus,
   type MediaAssetRow,
   type MediaKind,
@@ -244,9 +245,13 @@ export class WorkflowRegistry {
 
   /** A scene's registered frames: exactly one valid frame, invalid (any frame fails, or several), or none. */
   async loadSourceFramesForScene(caseId: string, sceneId: string): Promise<SceneFrameState> {
-    const rows = (await this.store.listMediaAssetsForCase(caseId, "source-frame")).filter(
-      (r) => (r.provenance as Record<string, unknown> | null)?.sceneId === sceneId,
-    );
+    const rows = await this.store.listSourceFramesForScene(caseId, sceneId, REGISTRY_LOOKUP_CAP + 1);
+    // More than the cap means the result may be truncated: fail closed, choose nothing.
+    if (rows.length > REGISTRY_LOOKUP_CAP) return { valid: null, invalid: true };
+    // Defense in depth: the store filtered these; reject the lookup if any row disagrees.
+    if (rows.some((r) => r.case_id !== caseId || r.kind !== "source-frame" || (r.provenance as Record<string, unknown> | null)?.sceneId !== sceneId)) {
+      return { valid: null, invalid: true };
+    }
     if (rows.length === 0) return { valid: null, invalid: false };
     const loaded = await Promise.all(rows.map((r) => this.loadSourceFrame(r.asset_id)));
     const valid = loaded.filter((r) => r.ok).map((r) => (r as { ok: true; value: SourceFrameRecord }).value);
@@ -264,7 +269,10 @@ export class WorkflowRegistry {
   async loadGeneratedPreview(planId: string): Promise<Result<PreviewRecord & { assetId: string }>> {
     const plan = await this.loadPlan(planId);
     if (!plan.ok) return fail(`The preview's plan does not revalidate: ${plan.errors[0]}`);
-    const rows = (await this.store.listMediaAssetsForPlan(planId, "generated-preview")).sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const fetched = await this.store.listMediaAssetsForPlan(planId, "generated-preview", REGISTRY_LOOKUP_CAP + 1);
+    // Never choose from a truncated result.
+    if (fetched.length > REGISTRY_LOOKUP_CAP) return fail(`More than ${REGISTRY_LOOKUP_CAP} previews are registered for ${planId}; refusing to choose from a truncated lookup.`);
+    const rows = [...fetched].sort((a, b) => b.created_at.localeCompare(a.created_at));
     const problems: string[] = [];
     for (const row of rows) {
       const errors = validateMediaRow(row);

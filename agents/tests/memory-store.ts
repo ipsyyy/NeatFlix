@@ -91,17 +91,20 @@ export class MemoryWorkflowStore implements WorkflowStore {
     return clone(this.media.get(assetId));
   }
 
-  async listMediaAssetsForPlan(planId: string, kind: MediaKind): Promise<MediaAssetRow[]> {
+  async listMediaAssetsForPlan(planId: string, kind: MediaKind, limit: number): Promise<MediaAssetRow[]> {
     return [...this.media.values()]
       .filter((m) => m.plan_id === planId && m.kind === kind)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
       .map((m) => structuredClone(m));
   }
 
-  async listMediaAssetsForCase(caseId: string, kind: MediaKind): Promise<MediaAssetRow[]> {
+  async listSourceFramesForScene(caseId: string, sceneId: string, limit: number): Promise<MediaAssetRow[]> {
+    // Same semantics as the Supabase query: case, kind, and provenance->>sceneId (text) filtered before the limit.
     return [...this.media.values()]
-      .filter((m) => m.case_id === caseId && m.kind === kind)
+      .filter((m) => m.case_id === caseId && m.kind === "source-frame" && textAt(m.provenance, "sceneId") === sceneId)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
       .map((m) => structuredClone(m));
   }
 
@@ -147,3 +150,11 @@ export class MemoryWorkflowStore implements WorkflowStore {
 }
 
 const clone = <T>(v: T | undefined): T | null => (v === undefined ? null : structuredClone(v));
+
+/** Postgres `->>`: a JSON object's field as text (strings as-is, other scalars stringified), else null. */
+function textAt(json: unknown, key: string): string | null {
+  if (typeof json !== "object" || json === null || Array.isArray(json)) return null;
+  const v = (json as Record<string, unknown>)[key];
+  if (v === undefined || v === null) return null;
+  return typeof v === "string" ? v : JSON.stringify(v);
+}

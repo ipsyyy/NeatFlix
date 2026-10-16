@@ -45,6 +45,13 @@ export type MediaAssetRow = {
   created_at: string;
 };
 
+/**
+ * Most records a registry lookup may consider. Lookups request one more than
+ * this; more than this many matching rows means the lookup fails closed rather
+ * than choosing from a truncated result.
+ */
+export const REGISTRY_LOOKUP_CAP = 20;
+
 export type ReviewDecisionValue = "revise" | "approve-for-human-review" | "stop";
 
 export type ReviewRow = {
@@ -113,8 +120,10 @@ export interface WorkflowStore {
    */
   updateMediaAsset(assetId: string, patch: Partial<Omit<NewMediaAsset, "asset_id">>): Promise<void>;
   getMediaAsset(assetId: string): Promise<MediaAssetRow | null>;
-  listMediaAssetsForPlan(planId: string, kind: MediaKind): Promise<MediaAssetRow[]>;
-  listMediaAssetsForCase(caseId: string, kind: MediaKind): Promise<MediaAssetRow[]>;
+  /** Up to `limit` newest assets of a kind for a plan, filtered by the store itself. */
+  listMediaAssetsForPlan(planId: string, kind: MediaKind, limit: number): Promise<MediaAssetRow[]>;
+  /** Up to `limit` newest source frames of a case whose provenance names the scene, filtered by the store itself. */
+  listSourceFramesForScene(caseId: string, sceneId: string, limit: number): Promise<MediaAssetRow[]>;
 
   insertReview(row: NewReview): Promise<void>;
   getReview(reviewId: string): Promise<ReviewRow | null>;

@@ -7,6 +7,7 @@ import type { SourceFrameRegistry } from "@/agents/handoff/source-frames";
 import { canonicalMentions, checkMentions, type MentionArg, type RoomMember } from "@/agents/handoff/mentions";
 import { HANDOFF_FENCE, extractHandoffs } from "@/agents/handoff/protocol";
 import { stampOutgoingContent } from "@/agents/handoff/stamp";
+import { handoffScope, runInTurnScope } from "./turn-scope";
 
 type AdapterTools = Parameters<AnthropicAdapter["onMessage"]>[1];
 
@@ -201,6 +202,12 @@ export class StampingAnthropicAdapter extends AnthropicAdapter {
 
   override async onMessage(...args: Parameters<AnthropicAdapter["onMessage"]>): ReturnType<AnthropicAdapter["onMessage"]> {
     const [message, tools, ...rest] = args;
-    return super.onMessage(message, withHandoffStamping<AdapterTools>(tools, this.stampLogger, undefined, this.mentionPolicy, this.sendOptions), ...rest);
+    // The adapter only receives messages the handoff gate accepted, so the
+    // handoff's case and scene scope this turn's tools (turn-scope.ts).
+    const [block] = extractHandoffs(message.content);
+    const scope = block?.ok ? handoffScope(block.value) : null;
+    return runInTurnScope(scope, () =>
+      super.onMessage(message, withHandoffStamping<AdapterTools>(tools, this.stampLogger, undefined, this.mentionPolicy, this.sendOptions), ...rest),
+    );
   }
 }
