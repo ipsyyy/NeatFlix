@@ -128,6 +128,8 @@ export interface WorkflowStore {
 
   insertPlan(row: NewPlan): Promise<void>;
   getPlan(planId: string): Promise<PlanRow | null>;
+  /** Up to `limit` plans of a case, oldest first, filtered by the store itself. */
+  listPlansForCase(caseId: string, limit: number): Promise<PlanRow[]>;
 
   insertMediaAsset(row: NewMediaAsset): Promise<void>;
   /**

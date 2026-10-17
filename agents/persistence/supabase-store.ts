@@ -106,6 +106,14 @@ export class SupabaseWorkflowStore implements WorkflowStore {
     return this.one<PlanRow>("placement_plans", "plan_id", planId);
   }
 
+  async listPlansForCase(caseId: string, limit: number): Promise<PlanRow[]> {
+    const rows = (await this.request("placement_plans", {
+      method: "GET",
+      query: `case_id=eq.${encodeURIComponent(caseId)}&select=*&order=created_at.asc&limit=${safeLimit(limit)}`,
+    })) as PlanRow[] | null;
+    return rows ?? [];
+  }
+
   async insertMediaAsset(row: NewMediaAsset): Promise<void> {
     await this.insert("media_assets", row);
   }

@@ -107,6 +107,6 @@ export function readAnthropicKey(env: Env): string {
 
 /** Every secret value currently configured, for redaction. Never logged itself. */
 export function collectSecrets(env: Env): string[] {
-  const names = [...AGENT_ROLES.map((r) => AGENT_REGISTRY[r].env.apiKey), ANTHROPIC_KEY_ENV, "SUPABASE_SECRET_KEY", "GEMINI_API_KEY", "REACTOR_API_KEY", "MASKY_API_KEY"];
+  const names = [...AGENT_ROLES.map((r) => AGENT_REGISTRY[r].env.apiKey), ANTHROPIC_KEY_ENV, "SUPABASE_SECRET_KEY", "GEMINI_API_KEY", "REACTOR_API_KEY", "MASKY_API_KEY", "LANGSMITH_API_KEY"];
   return names.map((n) => present(env, n)).filter((v): v is string => v !== null);
 }

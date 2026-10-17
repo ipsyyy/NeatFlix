@@ -67,6 +67,14 @@ export class MemoryWorkflowStore implements WorkflowStore {
     return clone(this.plans.get(planId));
   }
 
+  async listPlansForCase(caseId: string, limit: number): Promise<PlanRow[]> {
+    return [...this.plans.values()]
+      .filter((p) => p.case_id === caseId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .slice(0, limit)
+      .map((p) => structuredClone(p));
+  }
+
   async insertMediaAsset(row: NewMediaAsset): Promise<void> {
     if (this.media.has(row.asset_id) || [...this.media.values()].some((m) => m.storage_ref === row.storage_ref)) {
       throw new DuplicateRecordError("media_assets");

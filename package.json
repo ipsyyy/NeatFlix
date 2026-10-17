@@ -23,7 +23,8 @@
     "media:fallback-preview": "tsx agents/scripts/fallback-preview.ts",
     "agents:deliver-plan-v3": "tsx agents/scripts/deliver-plan-v3.ts",
     "agents:record-human-approval": "tsx agents/scripts/record-human-approval.ts",
-    "agents:masky-identities": "tsx agents/scripts/masky-identities.ts"
+    "agents:masky-identities": "tsx agents/scripts/masky-identities.ts",
+    "langsmith:trace-case": "tsx agents/scripts/langsmith-trace-case.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
