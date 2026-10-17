@@ -38,14 +38,55 @@ export function describeShape(value: unknown, depth = 0): unknown {
   if (typeof value === "object" && value !== null) return Object.fromEntries(Object.keys(value).sort().slice(0, 30).map((k) => [k.replace(/[^\w.-]/g, "_").slice(0, 40), describeShape((value as Record<string, unknown>)[k], depth + 1)]));
   return value === null ? "null" : typeof value;
 }
-const SpeakStart = z.object({ generationId: id.optional(), id: id.optional(), reused: z.boolean().optional() }).passthrough();
-const SpeakStatus = z
-  .object({ status: z.string().max(40), audioUrl: z.string().url().nullish(), videoUrl: z.string().url().nullish(), error: z.unknown().optional() })
-  .passthrough();
+
+/** Where a speech response's fields may sit: the body itself (documented) or one common wrapper. */
+const SPEECH_WRAPPERS = ["generation", "data", "result", "speech", "job"] as const;
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const speechCandidates = (body: unknown): Record<string, unknown>[] =>
+  isRecord(body) ? [body, ...SPEECH_WRAPPERS.map((k) => body[k]).filter(isRecord)] : [];
+const JOB_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
+const FAILED_STATUS = /^(error|failed|failure|canceled|cancelled)$/i;
+const FINISHED_STATUS = /^(ready|complete|completed|done|succeeded|success)$/i;
+const httpsUrl = (v: unknown): string | null => (typeof v === "string" && /^https:\/\/\S+$/.test(v) && URL.canParse(v) ? v : null);
+
+/** A speech request's job id and dedup flag, or the redacted structure of an unrecognized response. */
+export function parseSpeechStart(body: unknown): { generationId: string; reused: boolean } | { unrecognized: unknown } {
+  for (const c of speechCandidates(body)) {
+    const jobId = [c.generationId, c.id, c.jobId].find((v) => typeof v === "string" && JOB_ID.test(v)) as string | undefined;
+    if (jobId) return { generationId: jobId, reused: c.reused === true || (isRecord(body) && body.reused === true) };
+  }
+  return { unrecognized: describeShape(body) };
+}
+
+/**
+ * A speech job's state from its status response: the documented body or a
+ * common wrapper. Fails closed: a missing status, or a finished status (or a
+ * media field) without an https media URL, is "unrecognized" and carries only
+ * the redacted structure.
+ */
+export function parseSpeechStatus(body: unknown, output: SpeakOutput): SpeakState {
+  for (const c of speechCandidates(body)) {
+    if (typeof c.status !== "string" || c.status.length === 0 || c.status.length > 100) continue;
+    const status = c.status;
+    if (FAILED_STATUS.test(status)) return { state: "failed", status };
+    const nested = isRecord(c[output]) ? (c[output] as Record<string, unknown>).url : undefined;
+    const raw = (output === "video" ? c.videoUrl : c.audioUrl) ?? nested;
+    const mediaUrl = httpsUrl(raw);
+    if (mediaUrl) return { state: "done", status, mediaUrl };
+    const finished = FINISHED_STATUS.test(status) || status.toLowerCase() === output;
+    if ((raw !== undefined && raw !== null) || finished) return { state: "unrecognized", shape: describeShape(body) };
+    return { state: "pending", status };
+  }
+  return { state: "unrecognized", shape: describeShape(body) };
+}
 
 export type MaskyVoice = { id: string; name: string; source?: string };
 export type SpeakOutput = "audio" | "video";
-export type SpeakState = { state: "pending"; status: string } | { state: "done"; status: string; mediaUrl: string } | { state: "failed"; status: string };
+export type SpeakState =
+  | { state: "pending"; status: string }
+  | { state: "done"; status: string; mediaUrl: string }
+  | { state: "failed"; status: string }
+  | { state: "unrecognized"; shape: unknown };
 
 export interface MaskyApi {
   listVoices(): Promise<MaskyVoice[]>;
@@ -119,17 +160,13 @@ export class MaskyClient implements MaskyApi {
   }
 
   async startSpeech(avatarId: string, text: string, output: SpeakOutput): Promise<{ generationId: string; reused: boolean }> {
-    const r = await this.call(SpeakStart, "POST", `/avatars/${encodeURIComponent(avatarId)}/speak`, { text, textMode: "literal", output });
-    const generationId = r.generationId ?? r.id;
-    if (!generationId) throw new MaskyError(200, "speech response had no generation id");
-    return { generationId, reused: r.reused === true };
+    const r = parseSpeechStart(await this.raw("POST", `/avatars/${encodeURIComponent(avatarId)}/speak`, { text, textMode: "literal", output }));
+    if ("unrecognized" in r) throw new MaskyError(200, `speech response had no job id; redacted structure ${JSON.stringify(r.unrecognized)}`);
+    return r;
   }
 
   async speechStatus(generationId: string, output: SpeakOutput): Promise<SpeakState> {
-    const r = await this.call(SpeakStatus, "GET", `/avatars/speak/${encodeURIComponent(generationId)}`);
-    if (r.status === "error" || r.status === "failed") return { state: "failed", status: r.status };
-    const mediaUrl = output === "video" ? r.videoUrl : r.audioUrl;
-    return mediaUrl && mediaUrl.startsWith("https://") ? { state: "done", status: r.status, mediaUrl } : { state: "pending", status: r.status };
+    return parseSpeechStatus(await this.raw("GET", `/avatars/speak/${encodeURIComponent(generationId)}`), output);
   }
 }
 

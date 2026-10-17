@@ -36,9 +36,9 @@ import sharp from "sharp";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT, safeVoiceLines } from "@/agents/masky/client";
-import { avatarDisplayName, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type ReusedAvatar } from "@/agents/masky/generate";
+import { avatarDisplayName, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type RecordedSpeech, type ReusedAvatar } from "@/agents/masky/generate";
 import { AGENT_IDENTITIES, estimateSpeechSeconds, identitySpecSha256, portraitSvg, validateIdentities } from "@/agents/masky/identities";
-import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName } from "@/agents/masky/ledger";
+import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, speechByRole } from "@/agents/masky/ledger";
 import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
 
@@ -90,7 +90,12 @@ async function main(): Promise<number> {
   if (manifestErrors.length > 0) return (out(`The recorded manifest is invalid: ${manifestErrors.join(" ")}`), 1);
   const recorded = Object.keys(existing.entries);
   const ledger = new FileAvatarLedger(LEDGER_PATH);
-  const avatars = avatarsByRole(ledger.read());
+  const events = ledger.read();
+  const avatars = avatarsByRole(events);
+  const speech = speechByRole(events);
+  const reuseSpeech: Partial<Record<AgentRole, RecordedSpeech>> = Object.fromEntries(
+    Object.entries(speech).map(([r, e]) => [r, { maskyAvatarId: e!.maskyAvatarId, maskyGenerationId: e!.maskyGenerationId, output: e!.output, textSha256: e!.textSha256, reused: e!.reused }]),
+  );
   if (!avatars.ok) return (out(`The avatar ledger cannot be used: ${avatars.errors.join(" ")}`), 1);
   for (const [role, e] of Object.entries(avatars.value)) {
     if (e!.specSha256 !== identitySpecSha256(AGENT_IDENTITIES[role as AgentRole])) return (out(`${role}: the recorded avatar was made for a different identity spec. Nothing was done.`), 1);
@@ -99,7 +104,8 @@ async function main(): Promise<number> {
   const key = process.env[MASKY_API_KEY_ENV]?.trim() ?? "";
   out(`Masky key (${MASKY_API_KEY_ENV}): ${key ? (MASKY_KEY_FORMAT.test(key) ? "configured, format ok" : "configured, UNEXPECTED FORMAT") : "MISSING"}; Supabase private storage: ${createPrivateStorageFromEnv(process.env) ? "configured" : "MISSING"}.`);
   out(`Recorded identities (live manifest): ${recorded.length === 0 ? "none" : recorded.join(", ")}`);
-  out(`Recorded avatars (ledger): ${Object.keys(avatars.value).length === 0 ? "none" : Object.entries(avatars.value).map(([r, e]) => `${r}=${e!.maskyAvatarId} (${e!.event}, voice ${e!.voice.name})`).join("; ")}\n`);
+  out(`Recorded avatars (ledger): ${Object.keys(avatars.value).length === 0 ? "none" : Object.entries(avatars.value).map(([r, e]) => `${r}=${e!.maskyAvatarId} (${e!.event}, voice ${e!.voice.name})`).join("; ")}`);
+  out(`Recorded speech jobs (ledger): ${Object.keys(speech).length === 0 ? "none" : Object.entries(speech).map(([r, e]) => `${r}=${e!.maskyGenerationId}${e!.reused ? " (deduplicated)" : ""}`).join("; ")}\n`);
 
   const adopt = process.argv.find((a) => a.startsWith("--adopt="))?.slice("--adopt=".length);
   if (adopt !== undefined) {
@@ -145,6 +151,17 @@ async function main(): Promise<number> {
     ].join("\n"),
   );
 
+  // Recovery: a recorded avatar without a recorded speech job had (or may have had) a request whose job id was not kept.
+  const pending = AGENT_ROLES.filter((r) => avatars.value[r] && !speech[r]);
+  if (pending.length > 0) {
+    out("\nRecovery (a recorded avatar has no recorded speech job):");
+    for (const r of pending) {
+      const i = AGENT_IDENTITIES[r];
+      out(`  ${r}: the next request is POST /avatars/${avatars.value[r]!.maskyAvatarId}/speak with body ${JSON.stringify({ text: i.spokenLine, textMode: "literal", output: i.spokenOutput })}`);
+      out("    It is identical to the earlier request, which Masky documents as deduplicated (HTTP 200, reused: true, no second charge); its job id is recorded in the ledger before any status check.");
+    }
+  }
+
   if (generate === undefined) {
     out(`\nPreflight only: no network request was made. To generate: --generate=${GENERATE_TOKEN}`);
     return 0;
@@ -156,7 +173,7 @@ async function main(): Promise<number> {
 
   const result = await generateIdentities(
     { masky, ledger, storage, renderPng, download: (url) => downloadProviderMedia(url), probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
-    { existing, voiceOverrides, reuse },
+    { existing, voiceOverrides, reuse, reuseSpeech },
   );
   if (result.voices) out(`\nVoices: ${AGENT_ROLES.map((r) => `${r}=${result.voices![r].name} (${result.voices![r].id})`).join("; ")}`);
   const complete = !result.failed && result.completed.length === AGENT_ROLES.length && validateManifest(result.manifest).length === 0;

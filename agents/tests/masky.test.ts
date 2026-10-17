@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import sharp from "sharp";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
-import { describeShape, MaskyClient, safeVoiceLines, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
-import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, type AvatarLedger, type AvatarLedgerEvent } from "@/agents/masky/ledger";
+import { describeShape, MaskyClient, parseSpeechStart, parseSpeechStatus, safeVoiceLines, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
+import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, speechByRole, type AvatarLedger, type AvatarLedgerEvent, type LedgerEvent } from "@/agents/masky/ledger";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
@@ -55,6 +55,9 @@ class FakeStorage implements PortraitHandoffStorage {
 class FakeMasky implements MaskyApi {
   calls: string[] = [];
   failStartFor: AgentRole | null = null;
+  statusOverride: SpeakState | null = null;
+  /** Offsets new avatar ids, so a second run never reissues an id a first run already used. */
+  idOffset = 0;
   avatarInputs: { imageUrl: string; voiceId: string; displayName: string }[] = [];
   speech: { text: string; output: string }[] = [];
   failSpeechFor: AgentRole | null = null;
@@ -68,7 +71,7 @@ class FakeMasky implements MaskyApi {
   async createAvatar(input: { displayName: string; imageUrl: string; personalityPrompt: string; voiceId: string }) {
     this.calls.push("avatar");
     this.avatarInputs.push(input);
-    return { avatarId: `av-${this.avatarInputs.length}` };
+    return { avatarId: `av-${this.avatarInputs.length + this.idOffset}` };
   }
   async primaryImageAssetId(avatarId: string) {
     this.calls.push("images");
@@ -86,6 +89,7 @@ class FakeMasky implements MaskyApi {
   }
   async speechStatus(generationId: string): Promise<SpeakState> {
     this.calls.push("status");
+    if (this.statusOverride) return this.statusOverride;
     const n = (this.polls.get(generationId) ?? 0) + 1;
     this.polls.set(generationId, n);
     const role = AGENT_ROLES[Number(generationId.split("-").pop()) - 1];
@@ -95,10 +99,10 @@ class FakeMasky implements MaskyApi {
 }
 
 class FakeLedger implements AvatarLedger {
-  events: AvatarLedgerEvent[] = [];
+  events: LedgerEvent[] = [];
   fail = false;
   constructor(private readonly calls: string[]) {}
-  async append(e: AvatarLedgerEvent) {
+  async append(e: LedgerEvent) {
     this.calls.push("ledger");
     if (this.fail) throw new Error("disk full");
     this.events.push(e);
@@ -403,8 +407,9 @@ describe("Masky avatar recovery: no unrecorded avatar", () => {
       inject(x);
       const r = await generateIdentities(x.d);
       assert.equal(r.failed?.stage, stage, name);
-      assert.equal(x.masky.avatarInputs.length, x.ledger.events.length, `${name}: every created avatar is recorded`);
-      assert.ok(x.ledger.events.length >= 1, name);
+      const avatarEvents = x.ledger.events.filter((e) => e.event === "avatar-created");
+      assert.equal(x.masky.avatarInputs.length, avatarEvents.length, `${name}: every created avatar is recorded`);
+      assert.ok(avatarEvents.length >= 1, name);
       // In the call order, each "avatar" is immediately followed by its "ledger" write.
       x.masky.calls.forEach((c, i) => c === "avatar" && assert.equal(x.masky.calls[i + 1], "ledger", `${name}: ledger right after creation`));
       assert.ok(!x.masky.calls.includes("images"), "the image lookup is not on the critical path");
@@ -426,7 +431,7 @@ describe("Masky avatar recovery: no unrecorded avatar", () => {
     const r = await generateIdentities(x.d, { reuse: { "content-curator": { maskyAvatarId: "adopted-1", voiceId: "v-extra" } } });
     assert.equal(r.failed, null, JSON.stringify(r.failed));
     assert.equal(x.masky.avatarInputs.length, 4, "only four new avatars");
-    assert.equal(x.ledger.events.length, 4);
+    assert.equal(x.ledger.events.filter((e) => e.event === "avatar-created").length, 4);
     assert.deepEqual([r.manifest.entries["content-curator"]!.avatar.maskyAvatarId, r.manifest.entries["content-curator"]!.voice.id], ["adopted-1", "v-extra"]);
     assert.ok(!x.masky.avatarInputs.some((a) => a.voiceId === "v-extra"), "the reused voice stays distinct");
     assert.deepEqual(validateManifest(r.manifest), []);
@@ -510,5 +515,100 @@ describe("Masky avatar recovery: no unrecorded avatar", () => {
       { id: "bad id/../x", name: "Odd", source: "preset" },
     ]);
     assert.deepEqual(lines, ["Anna see <url> <redacted> | voice_a | custom", "Odd | <invalid id> | preset", "Zed Narrator | voice_b | preset"]);
+  });
+});
+
+describe("Masky speech recovery: job ids, tolerant status parsing, no duplicate charge", () => {
+  it("parses the documented status and common wrappers, and fails closed on anything else with redacted structure", () => {
+    const url = "https://cdn.example.com/a.mp3?sig=s3cret";
+    assert.deepEqual(parseSpeechStatus({ status: "audio", audioUrl: url }, "audio"), { state: "done", status: "audio", mediaUrl: url });
+    for (const wrapper of ["generation", "data", "result", "speech", "job"]) {
+      assert.deepEqual(parseSpeechStatus({ [wrapper]: { status: "ready", audioUrl: url } }, "audio"), { state: "done", status: "ready", mediaUrl: url }, wrapper);
+    }
+    assert.deepEqual(parseSpeechStatus({ status: "video", video: { url } }, "video"), { state: "done", status: "video", mediaUrl: url });
+    assert.deepEqual(parseSpeechStatus({ status: "pending" }, "audio"), { state: "pending", status: "pending" });
+    assert.deepEqual(parseSpeechStatus({ generation: { status: "audio" } }, "video"), { state: "pending", status: "audio" }, "audio stage of a video job");
+    assert.deepEqual(parseSpeechStatus({ status: "error" }, "audio"), { state: "failed", status: "error" });
+    const unknowns: unknown[] = [
+      { state: "ok", media: { link: url } },
+      { status: "ready" },
+      { status: "ready", audioUrl: "/relative/path.mp3" },
+      { status: "pending", audioUrl: "http://cdn.example.com/a.mp3" },
+      null,
+      "text",
+    ];
+    for (const body of unknowns) {
+      const r = parseSpeechStatus(body, "audio");
+      assert.equal(r.state, "unrecognized", JSON.stringify(body));
+      assert.ok(!/https?:|s3cret|relative|cdn/.test(JSON.stringify((r as { shape: unknown }).shape)), "only field names and types");
+    }
+    assert.deepEqual((parseSpeechStatus({ state: "ok", media: { link: url } }, "audio") as { shape: unknown }).shape, { media: { link: "string" }, state: "string" });
+  });
+
+  it("reads the job id from the documented response or a wrapper, and reports an unknown one only as structure", () => {
+    assert.deepEqual(parseSpeechStart({ generationId: "g1" }), { generationId: "g1", reused: false });
+    assert.deepEqual(parseSpeechStart({ generation: { id: "g2" }, reused: true }), { generationId: "g2", reused: true });
+    assert.deepEqual(parseSpeechStart({ data: { jobId: "g3", reused: true } }), { generationId: "g3", reused: true });
+    assert.deepEqual(parseSpeechStart({ ok: true, link: "https://x" }), { unrecognized: { link: "string", ok: "boolean" } });
+  });
+
+  it("records every speech job id in the ledger before the first status check", async () => {
+    const x = deps();
+    const r = await generateIdentities(x.d);
+    assert.equal(r.failed, null);
+    x.masky.calls.forEach((c, i) => c === "speak" && assert.deepEqual(x.masky.calls.slice(i + 1, i + 3), ["ledger", "status"], "ledger right after speak, before status"));
+    const jobs = x.ledger.events.filter((e) => e.event === "speech-requested");
+    assert.equal(jobs.length, 5);
+    assert.deepEqual(Object.keys(speechByRole(x.ledger.events)).sort(), [...AGENT_ROLES].sort());
+  });
+
+  it("fails closed on an unrecognized status, recording only its redacted structure", async () => {
+    const x = deps();
+    x.masky.statusOverride = { state: "unrecognized", shape: { result: { payload: "string" } } };
+    const r = await generateIdentities(x.d);
+    assert.deepEqual([r.failed?.role, r.failed?.stage, r.completed.length], ["content-curator", "speech", 0]);
+    const diag = x.ledger.events.find((e) => e.event === "speech-status-unrecognized");
+    assert.ok(diag && diag.event === "speech-status-unrecognized" && JSON.stringify(diag.shape) === '{"result":{"payload":"string"}}');
+    assert.ok(!x.masky.calls.includes("download") && x.downloads.length === 0, "nothing downloaded");
+    assert.equal(x.masky.speech.length, 1, "one speech request only");
+  });
+
+  it("recovers after a status-parser failure by polling the recorded job, never requesting (or paying for) speech again", async () => {
+    const first = deps();
+    first.masky.statusOverride = { state: "unrecognized", shape: { x: "string" } };
+    await generateIdentities(first.d);
+    const job = speechByRole(first.ledger.events)["content-curator"]!;
+    const avatarId = job.maskyAvatarId;
+    const again = deps();
+    again.masky.idOffset = 10;
+    const r = await generateIdentities(again.d, {
+      reuse: { "content-curator": { maskyAvatarId: avatarId, voiceId: "v-warm" } },
+      reuseSpeech: { "content-curator": { maskyAvatarId: job.maskyAvatarId, maskyGenerationId: job.maskyGenerationId, output: job.output, textSha256: job.textSha256, reused: job.reused } },
+    });
+    assert.equal(r.failed, null, JSON.stringify(r.failed));
+    assert.equal(again.masky.speech.length, 4, "no second speech request for the Content Curator");
+    assert.equal(r.manifest.entries["content-curator"]!.spoken.maskyGenerationId, job.maskyGenerationId);
+    assert.ok(!again.ledger.events.some((e) => e.event === "speech-requested" && e.role === "content-curator"));
+    // A recorded job for different text (or another avatar) is not reused.
+    const changed = deps();
+    await generateIdentities(changed.d, { reuseSpeech: { "content-curator": { ...job, maskyAvatarId: "av-1", textSha256: "0".repeat(64) } } });
+    assert.equal(changed.masky.speech[0]?.text, AGENT_IDENTITIES["content-curator"].spokenLine, "a mismatched job triggers a fresh request");
+  });
+
+  it("validates speech and diagnostic ledger events: identifiers and type names only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nf-ledger-"));
+    try {
+      const ledger = new FileAvatarLedger(join(dir, "l.jsonl"));
+      const speech: LedgerEvent = { event: "speech-requested", role: "content-curator", maskyAvatarId: "VDzafw3fD73I9SNZC6SY", maskyGenerationId: "gen_1", output: "audio", textSha256: "a".repeat(64), reused: true, source: "POST /avatars/{id}/speak", at: "2026-10-17T00:00:00.000Z" };
+      await ledger.append(speech);
+      await ledger.append({ event: "speech-status-unrecognized", role: "content-curator", maskyGenerationId: "gen_1", shape: { result: { payload: "string" }, items: [{ n: "number" }] }, at: "2026-10-17T00:00:01.000Z" });
+      assert.equal(ledger.read().length, 2);
+      assert.ok(avatarsByRole(ledger.read()).ok, "speech events are not avatars");
+      await assert.rejects(ledger.append({ event: "speech-status-unrecognized", role: "content-curator", maskyGenerationId: "gen_1", shape: { audioUrl: "https://cdn/x" }, at: "2026-10-17T00:00:02.000Z" }), /field names and value types/);
+      await assert.rejects(ledger.append({ event: "speech-status-unrecognized", role: "content-curator", maskyGenerationId: "gen_1", shape: { status: "ready" }, at: "2026-10-17T00:00:02.000Z" }), /field names and value types/);
+      await assert.rejects(ledger.append({ ...speech, maskyGenerationId: "" }), /speech job id/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

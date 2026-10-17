@@ -204,12 +204,21 @@ async function storeOnce(storage: PortraitHandoffStorage, ref: string, bytes: Ui
   }
 }
 
+/** A speech job recorded in the ledger for a role's avatar, text, and output. */
+export type RecordedSpeech = { maskyAvatarId: string; maskyGenerationId: string; output: SpeakOutput; textSha256: string; reused: boolean };
+
 /** An avatar already created (or adopted) for a role, recorded in the ledger, to reuse instead of creating another. */
 export type ReusedAvatar = { maskyAvatarId: string; voiceId: string };
 
 export async function generateIdentities(
   deps: GenerationDeps,
-  options: { existing?: IdentityManifest; voiceOverrides?: Partial<Record<AgentRole, string>>; reuse?: Partial<Record<AgentRole, ReusedAvatar>> } = {},
+  options: {
+    existing?: IdentityManifest;
+    voiceOverrides?: Partial<Record<AgentRole, string>>;
+    reuse?: Partial<Record<AgentRole, ReusedAvatar>>;
+    /** Speech jobs recorded in the ledger: polled again instead of requested again (no second charge). */
+    reuseSpeech?: Partial<Record<AgentRole, RecordedSpeech>>;
+  } = {},
 ): Promise<GenerationResult> {
   const clock = deps.clock ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -271,11 +280,38 @@ export async function generateIdentities(
       }
 
       stage = "speech";
-      const started = await deps.masky.startSpeech(avatarId, identity.spokenLine, identity.spokenOutput);
+      const textSha256 = createHash("sha256").update(identity.spokenLine).digest("hex");
+      const recorded = options.reuseSpeech?.[role];
+      let started: { generationId: string; reused: boolean };
+      if (recorded && recorded.maskyAvatarId === avatarId && recorded.textSha256 === textSha256 && recorded.output === identity.spokenOutput) {
+        started = { generationId: recorded.maskyGenerationId, reused: recorded.reused };
+        log(`${role}: polling recorded speech job ${started.generationId} (no new request)`);
+      } else {
+        started = await deps.masky.startSpeech(avatarId, identity.spokenLine, identity.spokenOutput);
+        // Record the job before any status check, so a later failure never forces a second request.
+        log(`${role}: speech job ${started.generationId}${started.reused ? " (deduplicated by Masky: no second charge)" : ""}`);
+        stage = "ledger";
+        await deps.ledger.append({
+          event: "speech-requested",
+          role,
+          maskyAvatarId: avatarId,
+          maskyGenerationId: started.generationId,
+          output: identity.spokenOutput,
+          textSha256,
+          reused: started.reused,
+          source: "POST /avatars/{id}/speak",
+          at: clock().toISOString(),
+        });
+        stage = "speech";
+      }
       let mediaUrl: string | null = null;
       for (let i = 0; i < (deps.maxPolls ?? 60) && !mediaUrl; i++) {
         const s = await deps.masky.speechStatus(started.generationId, identity.spokenOutput);
         if (s.state === "failed") throw new Error(`Masky speech ended with status "${s.status}".`);
+        if (s.state === "unrecognized") {
+          await deps.ledger.append({ event: "speech-status-unrecognized", role, maskyGenerationId: started.generationId, shape: s.shape, at: clock().toISOString() });
+          throw new Error(`Masky speech status response was not recognized; its redacted structure is recorded: ${JSON.stringify(s.shape)}`);
+        }
         if (s.state === "done") mediaUrl = s.mediaUrl;
         else await sleep(deps.pollIntervalMs ?? 5_000);
       }
