@@ -66,9 +66,13 @@ async function main(): Promise<number> {
   }
   if (!config.ok) return (out(`LangSmith is off: ${config.reason} Nothing was sent.`), 1);
 
-  const summary = await publishTrace(config.value, trace);
-  out(`\nPublished: ${summary.created} created, ${summary.existing} already present, ${summary.failed} failed (of ${summary.attempted}).`);
-  for (const r of summary.results.filter((x) => x.outcome === "failed")) out(`  failed ${r.kind} ${r.id}: ${r.status === null ? "no response" : `HTTP ${r.status}`}`);
+  const summary = await publishTrace(config.value, trace, fetch, secrets);
+  out(`\nPublished: ${summary.created} created, ${summary.existing} already present, ${summary.failed} failed (of ${summary.attempted} sent); ${summary.skipped} skipped (parent failed).`);
+  for (const r of summary.results.filter((x) => x.outcome === "failed")) {
+    out(`  failed ${r.kind} ${r.id}: ${r.status === null ? "no response" : `HTTP ${r.status}`}`);
+    for (const v of r.validation ?? []) out(`    ${v.path} [${v.code}]: ${v.message}`);
+  }
+  for (const r of summary.results.filter((x) => x.outcome === "skipped")) out(`  skipped (parent failed) ${r.kind} ${r.id}`);
   if (summary.failed > 0) out("LangSmith did not accept every record; NativeFrame is unaffected and nothing was retried.");
   out(`Trace id: ${built.root.trace_id} in project "${config.value.project}".`);
   return summary.failed === 0 ? 0 : 1;

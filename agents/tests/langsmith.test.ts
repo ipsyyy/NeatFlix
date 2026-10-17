@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { collectSecrets } from "@/agents/config/env";
 import { buildCaseTrace } from "@/agents/observability/case-trace";
-import { dottedStamp, langSmithConfigFromEnv, payloadLeaks, publishTrace, sanitize, stableUuid, TraceBuilder, type LangSmithConfig } from "@/agents/observability/langsmith";
+import { dottedStamp, langSmithConfigFromEnv, payloadLeaks, publishTrace, sanitize, stableUuidV7, TraceBuilder, validationDetails, type LangSmithConfig } from "@/agents/observability/langsmith";
 import { MemoryWorkflowStore } from "./memory-store";
 
 const KEY = "lsv2_pt_0123456789abcdef0123456789abcdef_0123456789";
@@ -49,11 +49,15 @@ describe("LangSmith payload safety", () => {
     assert.deepEqual(payloadLeaks(`${KEY} https://x storage://a/b fb686fec-b978`, [], ["fb686fec-b978"]), ["a key-shaped string", "a URL", "a private storage reference", "a reviewer or owner id"]);
   });
 
-  it("derives stable, valid ids and LangSmith's dotted_order time format", () => {
-    const a = stableUuid("case:x:run:root");
-    assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    assert.equal(stableUuid("case:x:run:root"), a);
-    assert.notEqual(stableUuid("case:x:run:other"), a);
+  it("derives deterministic, standards-compliant UUIDv7 ids and LangSmith's dotted_order time format", () => {
+    const t = "2026-10-16T00:11:33.496Z";
+    const a = stableUuidV7("case:x:run:root", t);
+    assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "version 7, RFC variant");
+    assert.equal(parseInt(a.replace(/-/g, "").slice(0, 12), 16), Date.parse(t), "the first 48 bits are the recorded time in ms");
+    assert.equal(stableUuidV7("case:x:run:root", t), a, "deterministic");
+    assert.notEqual(stableUuidV7("case:x:run:other", t), a, "distinct names at the same time differ");
+    assert.notEqual(stableUuidV7("case:x:run:root", "2026-10-16T00:11:33.497Z"), a);
+    assert.throws(() => stableUuidV7("x", "not a time"), /Invalid UUIDv7 time/);
     assert.equal(dottedStamp("2026-10-17T05:27:57.708Z"), "20261017T052757708000Z");
   });
 
@@ -101,12 +105,36 @@ describe("LangSmith publishing is fail-safe", () => {
     const { t } = trace();
     const down = (async () => new Response("err", { status: 500 })) as unknown as typeof fetch;
     const s = await publishTrace(CONFIG, t, down);
-    assert.deepEqual([s.created, s.failed], [0, 4]);
-    assert.equal(s.results.filter((r) => r.status === 500).length, 1, "only the root was attempted");
+    assert.deepEqual([s.attempted, s.created, s.failed, s.skipped], [1, 0, 1, 3], "only the root was sent; its child and all feedback were skipped");
+    assert.ok(s.results.filter((r) => r.outcome === "skipped").every((r) => r.status === null && !r.validation));
+    assert.equal(s.results[0].validation, undefined, "a 5xx carries no validation details");
     const offline = (async () => Promise.reject(new Error(`connect ECONNREFUSED with ${KEY}`))) as unknown as typeof fetch;
     const o = await publishTrace(CONFIG, t, offline);
-    assert.equal(o.failed, 4);
+    assert.deepEqual([o.failed, o.skipped], [1, 3]);
     assert.ok(!JSON.stringify(o).includes(KEY), "errors carry no secret");
+  });
+
+  it("keeps only sanitized field paths, codes, and messages from a 422, never the payload", async () => {
+    const { t } = trace();
+    const body = {
+      detail: [
+        { loc: ["body", "id"], type: "uuid_version", msg: `Bad id; see https://docs.example/x?token=1 key ${KEY}`, input: { inputs: { path: "storage://nf-media/agents/spoken/x.mp3" } }, ctx: { expected: "7" } },
+        { loc: ["body", "dotted_order"], type: "value_error", msg: "Invalid dotted order for storage://nf-media/x.png" },
+      ],
+    };
+    const fetchImpl = (async () => new Response(JSON.stringify(body), { status: 422, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const s = await publishTrace(CONFIG, t, fetchImpl, ["secret-value-123"]);
+    const root = s.results[0];
+    assert.deepEqual([root.outcome, root.status], ["failed", 422]);
+    assert.deepEqual(root.validation, [
+      { path: "body.id", code: "uuid_version", message: "Bad id; see [url] key [redacted]" },
+      { path: "body.dotted_order", code: "value_error", message: "Invalid dotted order for [private-media]" },
+    ]);
+    const text = JSON.stringify(s);
+    assert.ok(!/storage:\/\/|https?:|lsv2_|"input"|"ctx"|inputs/.test(text), "no payload echo, URL, key, or private path");
+    assert.deepEqual(validationDetails({ title: "Unprocessable", detail: "dotted_order must start with trace id" }, []), [{ path: "(body)", code: "Unprocessable", message: "dotted_order must start with trace id" }]);
+    assert.deepEqual(validationDetails("not json", []), []);
+    assert.equal(validationDetails({ detail: Array.from({ length: 30 }, () => ({ loc: ["x"], type: "t", msg: "m" })) }, []).length, 10);
   });
 });
 
@@ -158,6 +186,13 @@ describe("NativeFrame case trace from the registry", () => {
     assert.ok(payload.includes("not evaluated: the simulated A/B experiment"), "the missing experiment is stated, not invented");
     const again = await buildCaseTrace(store, { caseId: CASE, project: "p", secrets: [] });
     assert.ok(again.ok && again.trace.runs.map((x) => x.id).join() === r.trace.runs.map((x) => x.id).join(), "stable ids: a re-publish targets the same runs");
+    assert.ok(again.ok && again.trace.feedback.map((x) => x.id).join() === r.trace.feedback.map((x) => x.id).join(), "stable feedback ids");
+    const v7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    for (const run of r.trace.runs) {
+      assert.match(run.id, v7);
+      assert.equal(parseInt(run.id.replace(/-/g, "").slice(0, 12), 16), Date.parse(run.start_time), `${run.name}: id time is its recorded start`);
+    }
+    assert.ok(r.trace.feedback.every((f) => v7.test(f.id)));
   });
 
   it("scores current prompt labels as 1, and refuses an unknown case", async () => {

@@ -10,8 +10,10 @@ import { createHash } from "node:crypto";
  * - Every input, output, metadata value, and error is sanitized before it is
  *   queued: configured secrets, key-shaped strings, URLs, private storage://
  *   references, and identity fields (user, owner, reviewer ids) are removed.
- * - Run and feedback ids are derived from stable names, so publishing the same
- *   trace twice targets the same ids instead of creating a duplicate trace.
+ * - Run and feedback ids are deterministic UUIDv7: the 48-bit timestamp is the
+ *   run's recorded start time and the rest is derived from a stable name, so
+ *   publishing the same trace twice targets the same ids instead of creating a
+ *   duplicate trace.
  * - Publishing never throws: failures are reported as HTTP status codes only,
  *   so LangSmith being unavailable never affects NativeFrame.
  */
@@ -68,13 +70,17 @@ export function sanitize(value: unknown, secrets: readonly string[], depth = 0):
   return typeof value === "number" || typeof value === "boolean" || value === null ? value : String(value);
 }
 
-/** A stable UUID (version 8, RFC 9562 custom) derived from a name. */
-export function stableUuid(name: string): string {
-  const h = createHash("sha256").update(`nativeframe:${name}`).digest("hex").slice(0, 32).split("");
-  h[12] = "8";
-  h[16] = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16);
-  const s = h.join("");
-  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20, 32)}`;
+/**
+ * A deterministic UUIDv7 (RFC 9562): the first 48 bits are `time` in Unix
+ * milliseconds, then version 7, the RFC variant, and 74 bits derived from
+ * `name`. The same name and time always give the same id.
+ */
+export function stableUuidV7(name: string, time: string): string {
+  const ms = Date.parse(time);
+  if (!Number.isFinite(ms) || ms < 0 || ms >= 2 ** 48) throw new Error("Invalid UUIDv7 time.");
+  const hash = createHash("sha256").update(`nativeframe:${name}`).digest("hex");
+  const hex = ms.toString(16).padStart(12, "0") + "7" + hash.slice(0, 3) + ((parseInt(hash[3], 16) & 0x3) | 0x8).toString(16) + hash.slice(4, 19);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** LangSmith's dotted_order time segment: %Y%m%dT%H%M%S%fZ (microseconds). */
@@ -118,7 +124,7 @@ export class TraceBuilder {
 
   add(spec: { key: string; name: string; runType: RunType; start: string; end: string; inputs: unknown; outputs: unknown; metadata: Record<string, unknown>; tags?: string[]; error?: string; parent?: TraceRun }): TraceRun {
     if (this.runs.length >= MAX_TRACE_RUNS) throw new Error(`A trace may hold at most ${MAX_TRACE_RUNS} runs.`);
-    const id = stableUuid(`${this.namespace}:run:${spec.key}`);
+    const id = stableUuidV7(`${this.namespace}:run:${spec.key}`, spec.start);
     if (this.runs.some((r) => r.id === id)) throw new Error(`Duplicate run key ${spec.key}.`);
     const parent = spec.parent;
     if (parent && Date.parse(spec.start) < Date.parse(parent.start_time)) throw new Error(`Run ${spec.key} starts before its parent.`);
@@ -146,7 +152,7 @@ export class TraceBuilder {
     if (this.feedback.length >= MAX_TRACE_FEEDBACK) throw new Error(`A trace may hold at most ${MAX_TRACE_FEEDBACK} evaluation results.`);
     if (!/^[a-z0-9_]{1,80}$/.test(key) || !Number.isFinite(score) || score < 0 || score > 1) throw new Error(`Invalid evaluation ${key}.`);
     this.feedback.push({
-      id: stableUuid(`${this.namespace}:feedback:${run.id}:${key}`),
+      id: stableUuidV7(`${this.namespace}:feedback:${run.id}:${key}`, run.start_time),
       run_id: run.id,
       trace_id: run.trace_id,
       key,
@@ -162,15 +168,54 @@ export class TraceBuilder {
   }
 }
 
-export type PublishResult = { kind: "run" | "feedback"; id: string; outcome: "created" | "exists" | "failed"; status: number | null };
-export type PublishSummary = { attempted: number; created: number; existing: number; failed: number; results: PublishResult[] };
+/** A sanitized validation problem from a 4xx response: field path, error code, and message only. */
+export type ValidationDetail = { path: string; code: string; message: string };
+export type PublishResult = {
+  kind: "run" | "feedback";
+  id: string;
+  /** "skipped": not sent, because the run it belongs to (or its parent) failed. */
+  outcome: "created" | "exists" | "failed" | "skipped";
+  status: number | null;
+  validation?: ValidationDetail[];
+};
+export type PublishSummary = { attempted: number; created: number; existing: number; failed: number; skipped: number; results: PublishResult[] };
+
+const MAX_VALIDATION_DETAILS = 10;
+
+/**
+ * The sanitized validation details of a 4xx body: FastAPI-style detail arrays
+ * ({loc, type, msg}) or a problem title/detail string. Only field paths, error
+ * codes, and sanitized messages are kept; echoed input, context, payloads, and
+ * anything else are dropped.
+ */
+export function validationDetails(body: unknown, secrets: readonly string[]): ValidationDetail[] {
+  const clean = (v: unknown, max: number) => String(sanitize(typeof v === "string" ? v : "", secrets)).replace(/[\u0000-\u001f]/g, " ").slice(0, max);
+  const record = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+  const detail = record.detail;
+  if (Array.isArray(detail)) {
+    return detail.slice(0, MAX_VALIDATION_DETAILS).map((d) => {
+      const item = typeof d === "object" && d !== null ? (d as Record<string, unknown>) : {};
+      const loc = Array.isArray(item.loc) ? item.loc : [];
+      const path = loc.map((x) => (typeof x === "number" ? String(x) : String(x).replace(/[^\w.-]/g, "_").slice(0, 40))).slice(0, 8).join(".");
+      return { path: path || "(unknown)", code: clean(item.type, 60) || "(none)", message: clean(item.msg ?? (typeof d === "string" ? d : ""), 200) };
+    });
+  }
+  const message = clean(typeof detail === "string" ? detail : record.title ?? record.message, 200);
+  return message ? [{ path: "(body)", code: clean(record.type ?? record.title, 60) || "(none)", message }] : [];
+}
 
 /**
  * Sends a trace: runs (parents first), then feedback. Never throws. An
  * existing id (HTTP 409) counts as already published. Children of a failed
  * run and feedback on a failed run are not sent.
  */
-export async function publishTrace(config: LangSmithConfig, trace: Pick<TraceBuilder, "runs" | "feedback">, fetchImpl: typeof fetch = fetch): Promise<PublishSummary> {
+export async function publishTrace(
+  config: LangSmithConfig,
+  trace: Pick<TraceBuilder, "runs" | "feedback">,
+  fetchImpl: typeof fetch = fetch,
+  secrets: readonly string[] = [config.apiKey],
+): Promise<PublishSummary> {
+  const redact = [...new Set([...secrets, config.apiKey])];
   const results: PublishResult[] = [];
   const failedRuns = new Set<string>();
   const send = async (kind: PublishResult["kind"], id: string, path: string, body: unknown) => {
@@ -183,6 +228,18 @@ export async function publishTrace(config: LangSmithConfig, trace: Pick<TraceBui
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       status = res.status;
+      if (status >= 400 && status < 500 && status !== 409) {
+        const text = await res.text().catch(() => "");
+        let parsed: unknown = null;
+        try {
+          parsed = JSON.parse(text.slice(0, 64_000));
+        } catch {
+          parsed = null;
+        }
+        const validation = validationDetails(parsed, redact);
+        results.push({ kind, id, outcome: "failed", status, ...(validation.length ? { validation } : {}) });
+        return "failed" as const;
+      }
       await res.body?.cancel().catch(() => {});
     } catch {
       status = null;
@@ -194,20 +251,20 @@ export async function publishTrace(config: LangSmithConfig, trace: Pick<TraceBui
   for (const run of trace.runs) {
     if (run.parent_run_id && failedRuns.has(run.parent_run_id)) {
       failedRuns.add(run.id);
-      results.push({ kind: "run", id: run.id, outcome: "failed", status: null });
+      results.push({ kind: "run", id: run.id, outcome: "skipped", status: null });
       continue;
     }
     if ((await send("run", run.id, "/runs", run)) === "failed") failedRuns.add(run.id);
   }
   for (const f of trace.feedback) {
     if (failedRuns.has(f.run_id)) {
-      results.push({ kind: "feedback", id: f.id, outcome: "failed", status: null });
+      results.push({ kind: "feedback", id: f.id, outcome: "skipped", status: null });
       continue;
     }
     await send("feedback", f.id, "/feedback", f);
   }
   const count = (o: PublishResult["outcome"]) => results.filter((r) => r.outcome === o).length;
-  return { attempted: results.length, created: count("created"), existing: count("exists"), failed: count("failed"), results };
+  return { attempted: results.length - count("skipped"), created: count("created"), existing: count("exists"), failed: count("failed"), skipped: count("skipped"), results };
 }
 
 /** Why a payload is not safe to send: secret values, key-shaped strings, URLs, private media references, or identity values. */
