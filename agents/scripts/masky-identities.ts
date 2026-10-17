@@ -27,6 +27,7 @@
  * Run (preflight): npm run agents:masky-identities
  * Run (generate):  npm run agents:masky-identities -- --generate=nativeframe-agent-identities-v1 [--voices=<role>=<voiceId>,...]
  * Run (adopt):     npm run agents:masky-identities -- --adopt=<role> --voice-id=<voiceId> --voice-name="<name>"
+ * Run (voices):    npm run agents:masky-identities -- --list-voices   (one read-only GET /voices)
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,7 +35,7 @@ import { resolve } from "node:path";
 import sharp from "sharp";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
-import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT } from "@/agents/masky/client";
+import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT, safeVoiceLines } from "@/agents/masky/client";
 import { avatarDisplayName, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type ReusedAvatar } from "@/agents/masky/generate";
 import { AGENT_IDENTITIES, estimateSpeechSeconds, identitySpecSha256, portraitSvg, validateIdentities } from "@/agents/masky/identities";
 import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName } from "@/agents/masky/ledger";
@@ -60,6 +61,17 @@ async function main(): Promise<number> {
   loadLocalEnv();
   const secrets = collectSecrets(process.env);
   const out = (s: string) => console.log(redactSecrets(s, secrets));
+  // List voices (read-only): exactly one GET /voices, nothing else read, written, or called.
+  if (process.argv.includes("--list-voices")) {
+    if (process.argv.slice(2).some((a) => a !== "--list-voices")) return (out("--list-voices takes no other arguments. Nothing was done."), 1);
+    const masky = createMaskyClientFromEnv(process.env);
+    if (!masky) return (out("Masky is not configured. Nothing was done."), 1);
+    const lines = safeVoiceLines(await masky.listVoices());
+    out(`Masky voices (${lines.length}): name | id | source`);
+    for (const l of lines) out(`  ${l}`);
+    out("Read-only: one GET /voices; no avatar, speech, manifest, ledger, or storage change.");
+    return 0;
+  }
   const generate = process.argv.find((a) => a.startsWith("--generate="))?.slice("--generate=".length);
   if (generate !== undefined && generate !== GENERATE_TOKEN) return (out(`--generate must be exactly ${GENERATE_TOKEN}. Nothing was done.`), 1);
   const voiceArg = process.argv.find((a) => a.startsWith("--voices="))?.slice("--voices=".length);

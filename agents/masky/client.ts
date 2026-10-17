@@ -57,6 +57,15 @@ export interface MaskyApi {
   speechStatus(generationId: string, output: SpeakOutput): Promise<SpeakState>;
 }
 
+/** Voices as safe display lines: name (control characters, URLs, and key-like strings removed; ≤80 chars), id (or "<invalid id>"), source; sorted by name. */
+export function safeVoiceLines(voices: readonly MaskyVoice[]): string[] {
+  const clean = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/https?:\/\/\S+/g, "<url>").replace(/(mky|sk|sb)_[A-Za-z0-9_-]+/g, "<redacted>").trim().slice(0, 80);
+  return [...voices]
+    .map((v) => ({ name: clean(v.name) || "<unnamed>", id: /^[A-Za-z0-9_.:-]{1,200}$/.test(v.id) ? v.id : "<invalid id>", source: clean(v.source ?? "unknown").slice(0, 20) }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+    .map((v) => `${v.name} | ${v.id} | ${v.source}`);
+}
+
 const scrub = (s: string) => s.replace(/https?:\/\/\S+/g, "<url>").replace(/mky_[A-Za-z0-9_-]+/g, "<key>").slice(0, 200);
 
 export class MaskyClient implements MaskyApi {

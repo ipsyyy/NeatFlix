@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import sharp from "sharp";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
-import { describeShape, MaskyClient, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
+import { describeShape, MaskyClient, safeVoiceLines, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
 import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, type AvatarLedger, type AvatarLedgerEvent } from "@/agents/masky/ledger";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -501,5 +501,14 @@ describe("Masky avatar recovery: no unrecorded avatar", () => {
     assert.deepEqual(r.unexpectedShape, { items: [{ href: "string", n: "number" }], primary: { assetId: "string", url: "string" } });
     assert.ok(!/https|token|secret-asset/.test(JSON.stringify(r.unexpectedShape)));
     assert.deepEqual(describeShape(null), "null");
+  });
+
+  it("lists voices as safe name, id, and source lines only", () => {
+    const lines = safeVoiceLines([
+      { id: "voice_b", name: "Zed Narrator", source: "preset" },
+      { id: "voice_a", name: "Anna\nsee https://cdn.example/x?token=1 mky_secretkey99", source: "custom" },
+      { id: "bad id/../x", name: "Odd", source: "preset" },
+    ]);
+    assert.deepEqual(lines, ["Anna see <url> <redacted> | voice_a | custom", "Odd | <invalid id> | preset", "Zed Narrator | voice_b | preset"]);
   });
 });
