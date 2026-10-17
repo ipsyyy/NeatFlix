@@ -170,6 +170,14 @@ export class TraceBuilder {
 
 /** A sanitized validation problem from a 4xx response: field path, error code, and message only. */
 export type ValidationDetail = { path: string; code: string; message: string };
+/** What may be recorded about a failed response: no payload, header, URL, credential, path, or raw value. */
+export type ErrorDiagnosis = {
+  status: number;
+  contentType: string;
+  /** For JSON: field names and value types only. */
+  shape: unknown;
+  details: ValidationDetail[];
+};
 export type PublishResult = {
   kind: "run" | "feedback";
   id: string;
@@ -177,10 +185,86 @@ export type PublishResult = {
   outcome: "created" | "exists" | "failed" | "skipped";
   status: number | null;
   validation?: ValidationDetail[];
+  diagnosis?: ErrorDiagnosis;
 };
 export type PublishSummary = { attempted: number; created: number; existing: number; failed: number; skipped: number; results: PublishResult[] };
 
 const MAX_VALIDATION_DETAILS = 10;
+/** Subtrees that echo request values or carry transport data: never read. */
+const ECHO_KEYS = /^(input|inputs|ctx|context|value|values|body|request|payload|headers|url|uri|href|location|params|query|data|raw)$/i;
+const MESSAGE_KEYS = ["msg", "message", "error", "detail", "title", "description", "reason"] as const;
+const PATH_KEYS = ["loc", "path", "field", "fields", "pointer", "location_path", "param"] as const;
+const CODE_KEYS = ["type", "code", "error_code", "kind"] as const;
+
+/** Field names and value types only (no values), capped in depth and width. */
+export function structureOf(value: unknown, depth = 0): unknown {
+  if (depth > 4) return "…";
+  if (Array.isArray(value)) return value.length === 0 ? [] : [structureOf(value[0], depth + 1)];
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .slice(0, 30)
+        .map((k) => [k.replace(/[^\w.-]/g, "_").slice(0, 40), ECHO_KEYS.test(k) ? "(omitted)" : structureOf((value as Record<string, unknown>)[k], depth + 1)]),
+    );
+  }
+  return value === null ? "null" : typeof value;
+}
+
+/**
+ * A safe diagnosis of a failed response: status, content type (type/subtype
+ * only), the JSON structure, and every validation-style entry found anywhere
+ * in the body (field path, code, sanitized message). Plain text or HTML is
+ * reduced to one sanitized, tag-stripped message. Echoing subtrees are never
+ * read; nothing else is kept.
+ */
+export function diagnoseErrorResponse(status: number, contentType: string | null, bodyText: string, secrets: readonly string[]): ErrorDiagnosis {
+  const type = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  const safeType = /^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,60}$/.test(type) ? type : type ? "(unrecognized)" : "(none)";
+  const clean = (v: unknown, max: number) =>
+    String(sanitize((typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : "").replace(/<[^>]*>/g, " "), secrets))
+      .replace(/[\u0000-\u001f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, max);
+  const segment = (x: unknown) => (typeof x === "number" ? String(x) : String(x).replace(/[^\w.-]/g, "_").slice(0, 40));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText.slice(0, 64_000));
+  } catch {
+    const message = clean(bodyText, 300);
+    return { status, contentType: safeType, shape: "(not JSON)", details: message ? [{ path: "(body)", code: "(text)", message }] : [] };
+  }
+  const details: ValidationDetail[] = [];
+  const walk = (node: unknown, at: string[], depth: number) => {
+    if (details.length >= MAX_VALIDATION_DETAILS || depth > 6) return;
+    if (typeof node === "string") {
+      if (at.length > 0 && (MESSAGE_KEYS as readonly string[]).includes(at[at.length - 1])) details.push({ path: at.slice(0, -1).join(".") || "(body)", code: "(none)", message: clean(node, 200) });
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.slice(0, MAX_VALIDATION_DETAILS).forEach((x, i) => walk(x, [...at, String(i)], depth + 1));
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    const o = node as Record<string, unknown>;
+    const messageKey = MESSAGE_KEYS.find((k) => typeof o[k] === "string");
+    if (messageKey) {
+      const pathKey = PATH_KEYS.find((k) => o[k] !== undefined);
+      const rawPath = pathKey ? o[pathKey] : undefined;
+      const path = Array.isArray(rawPath) ? rawPath.slice(0, 8).map(segment).join(".") : typeof rawPath === "string" ? segment(rawPath) : at.join(".");
+      const codeKey = CODE_KEYS.find((k) => typeof o[k] === "string" || typeof o[k] === "number");
+      details.push({ path: path || "(body)", code: codeKey ? clean(o[codeKey], 60) || "(none)" : "(none)", message: clean(o[messageKey], 200) });
+    }
+    for (const [k, v] of Object.entries(o)) {
+      if (ECHO_KEYS.test(k) || k === messageKey || (PATH_KEYS as readonly string[]).includes(k) || (CODE_KEYS as readonly string[]).includes(k)) continue;
+      if (typeof v === "object" && v !== null) walk(v, [...at, segment(k)], depth + 1);
+      else if (!messageKey && typeof v === "string" && (MESSAGE_KEYS as readonly string[]).includes(k)) walk(v, [...at, k], depth + 1);
+    }
+  };
+  walk(parsed, [], 0);
+  return { status, contentType: safeType, shape: structureOf(parsed), details };
+}
 
 /**
  * The sanitized validation details of a 4xx body: FastAPI-style detail arrays
@@ -230,14 +314,8 @@ export async function publishTrace(
       status = res.status;
       if (status >= 400 && status < 500 && status !== 409) {
         const text = await res.text().catch(() => "");
-        let parsed: unknown = null;
-        try {
-          parsed = JSON.parse(text.slice(0, 64_000));
-        } catch {
-          parsed = null;
-        }
-        const validation = validationDetails(parsed, redact);
-        results.push({ kind, id, outcome: "failed", status, ...(validation.length ? { validation } : {}) });
+        const diagnosis = diagnoseErrorResponse(status, res.headers.get("content-type"), text, redact);
+        results.push({ kind, id, outcome: "failed", status, diagnosis, ...(diagnosis.details.length ? { validation: diagnosis.details } : {}) });
         return "failed" as const;
       }
       await res.body?.cancel().catch(() => {});

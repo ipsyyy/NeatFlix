@@ -14,6 +14,7 @@
  *
  * Run (preflight): npm run langsmith:trace-case
  * Run (publish):   npm run langsmith:trace-case -- --publish=NF-DEMO-0001
+ * Run (diagnose):  npm run langsmith:trace-case -- --diagnose-root=NF-DEMO-0001   (the root run only, one request)
  */
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { buildCaseTrace } from "@/agents/observability/case-trace";
@@ -29,6 +30,8 @@ async function main(): Promise<number> {
   const out = (s: string) => console.log(redactSecrets(s, secrets));
   const publish = process.argv.find((a) => a.startsWith("--publish="))?.slice("--publish=".length);
   if (publish !== undefined && publish !== CASE_ID) return (out(`--publish must repeat the exact case id ${CASE_ID}. Nothing was sent.`), 1);
+  const diagnoseRoot = process.argv.find((a) => a.startsWith("--diagnose-root="))?.slice("--diagnose-root=".length);
+  if (diagnoseRoot !== undefined && (diagnoseRoot !== CASE_ID || publish !== undefined)) return (out(`--diagnose-root must repeat ${CASE_ID} and be used alone. Nothing was sent.`), 1);
 
   const config = langSmithConfigFromEnv(process.env);
   out(`LangSmith: ${config.ok ? `enabled, project "${config.value.project}", endpoint host ${new URL(config.value.endpoint).host}` : `off (${config.reason})`}`);
@@ -60,6 +63,20 @@ async function main(): Promise<number> {
     `Calls a publish makes: ${trace.runs.length} × POST /runs and ${trace.feedback.length} × POST /feedback to ${config.ok ? new URL(config.value.endpoint).host : "the LangSmith API host"}, with stable ids (a repeat targets the same records). No Supabase write; no BAND, Claude, Gemini, Reactor, or Masky call.`,
   );
   if (leaks.length > 0) return (out("Nothing was sent."), 1);
+  if (diagnoseRoot !== undefined) {
+    if (!config.ok) return (out(`LangSmith is off: ${config.reason} Nothing was sent.`), 1);
+    // Exactly one request: the root run only. No child run or feedback, even if it is accepted.
+    const result = (await publishTrace(config.value, { runs: [built.root], feedback: [] }, fetch, secrets)).results[0];
+    out(`\nRoot-run diagnostic (1 request): ${result.outcome}${result.status === null ? " (no response)" : ` (HTTP ${result.status})`}`);
+    if (result.diagnosis) {
+      out(`  content type: ${result.diagnosis.contentType}`);
+      out(`  structure: ${JSON.stringify(result.diagnosis.shape)}`);
+      if (result.diagnosis.details.length === 0) out("  no validation entries could be extracted");
+      for (const v of result.diagnosis.details) out(`  ${v.path} [${v.code}]: ${v.message}`);
+    }
+    out("No child run or feedback was sent; nothing was retried.");
+    return result.outcome === "created" || result.outcome === "exists" ? 0 : 1;
+  }
   if (publish === undefined) {
     out(`\nPreflight only: Supabase reads only; no LangSmith request. To publish: --publish=${CASE_ID}`);
     return config.ok ? 0 : 1;

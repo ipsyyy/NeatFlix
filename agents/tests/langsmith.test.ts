@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { collectSecrets } from "@/agents/config/env";
 import { buildCaseTrace } from "@/agents/observability/case-trace";
-import { dottedStamp, langSmithConfigFromEnv, payloadLeaks, publishTrace, sanitize, stableUuidV7, TraceBuilder, validationDetails, type LangSmithConfig } from "@/agents/observability/langsmith";
+import { diagnoseErrorResponse, dottedStamp, langSmithConfigFromEnv, payloadLeaks, publishTrace, sanitize, stableUuidV7, TraceBuilder, validationDetails, type LangSmithConfig } from "@/agents/observability/langsmith";
 import { MemoryWorkflowStore } from "./memory-store";
 
 const KEY = "lsv2_pt_0123456789abcdef0123456789abcdef_0123456789";
@@ -131,7 +131,9 @@ describe("LangSmith publishing is fail-safe", () => {
       { path: "body.dotted_order", code: "value_error", message: "Invalid dotted order for [private-media]" },
     ]);
     const text = JSON.stringify(s);
-    assert.ok(!/storage:\/\/|https?:|lsv2_|"input"|"ctx"|inputs/.test(text), "no payload echo, URL, key, or private path");
+    assert.ok(!/storage:\/\/|https?:|lsv2_|nf-media/.test(text), "no payload echo, URL, key, or private path");
+    const shape = root.diagnosis?.shape as { detail: { input: string; ctx: string }[] };
+    assert.deepEqual([shape.detail[0].input, shape.detail[0].ctx], ["(omitted)", "(omitted)"], "echoed subtrees appear only as omitted field names");
     assert.deepEqual(validationDetails({ title: "Unprocessable", detail: "dotted_order must start with trace id" }, []), [{ path: "(body)", code: "Unprocessable", message: "dotted_order must start with trace id" }]);
     assert.deepEqual(validationDetails("not json", []), []);
     assert.equal(validationDetails({ detail: Array.from({ length: 30 }, () => ({ loc: ["x"], type: "t", msg: "m" })) }, []).length, 10);
@@ -200,5 +202,47 @@ describe("NativeFrame case trace from the registry", () => {
     assert.ok(r.ok && r.evaluations.find((e) => e.key === "prompt_label_currency")?.score === 1);
     const missing = await buildCaseTrace(new MemoryWorkflowStore(), { caseId: CASE, project: "p", secrets: [] });
     assert.equal(missing.ok, false);
+  });
+});
+
+describe("LangSmith error diagnosis (diagnostic only)", () => {
+  const leak = /lsv2_|https?:|storage:\/\/|secret-value-123|SENSITIVE|fb686fec/;
+
+  it("extracts paths, codes, and sanitized messages from nested and non-standard JSON, never values", () => {
+    const body = {
+      detail: { errors: [{ field: "dotted_order", code: "invalid_format", message: `dotted_order mismatch; see https://docs.example/x?token=${KEY}` }, { path: ["extra", "metadata"], error: "too large", value: "SENSITIVE" }] },
+      request: { inputs: { note: "SENSITIVE storage://nf-media/x.mp3" } },
+      status: 422,
+    };
+    const d = diagnoseErrorResponse(422, "application/json; charset=utf-8", JSON.stringify(body), ["secret-value-123"]);
+    assert.equal(d.contentType, "application/json");
+    assert.deepEqual(d.details, [
+      { path: "dotted_order", code: "invalid_format", message: "dotted_order mismatch; see [url]" },
+      { path: "extra.metadata", code: "(none)", message: "too large" },
+    ]);
+    assert.deepEqual(d.shape, { detail: { errors: [{ code: "string", field: "string", message: "string" }] }, request: "(omitted)", status: "number" });
+    assert.ok(!leak.test(JSON.stringify(d)), JSON.stringify(d));
+  });
+
+  it("handles message, error, and title bodies, plain text, HTML, and unknown content types safely", () => {
+    assert.deepEqual(diagnoseErrorResponse(422, "application/json", JSON.stringify({ message: "Invalid run: start_time", code: 42 }), []).details, [{ path: "(body)", code: "42", message: "Invalid run: start_time" }]);
+    assert.deepEqual(diagnoseErrorResponse(422, "application/problem+json", JSON.stringify({ title: "Unprocessable", type: "about:blank" }), []).details, [{ path: "(body)", code: "about:blank", message: "Unprocessable" }]);
+    assert.deepEqual(diagnoseErrorResponse(422, "application/json", JSON.stringify({ error: "bad" }), []).details, [{ path: "(body)", code: "(none)", message: "bad" }]);
+    const text = diagnoseErrorResponse(422, "text/plain", `invalid trace for ${KEY} at storage://nf-media/a.png`, []);
+    assert.deepEqual([text.shape, text.details], ["(not JSON)", [{ path: "(body)", code: "(text)", message: "invalid trace for [redacted] at [private-media]" }]]);
+    const html = diagnoseErrorResponse(422, "text/html", "<html><body><h1>Unprocessable Entity</h1><a href='https://x'>x</a></body></html>", []);
+    assert.equal(html.details[0].message, "Unprocessable Entity x");
+    assert.equal(diagnoseErrorResponse(422, "weird type with spaces", "", []).contentType, "(unrecognized)");
+    assert.deepEqual(diagnoseErrorResponse(422, null, "", []).details, []);
+    assert.equal(diagnoseErrorResponse(422, "application/json", JSON.stringify({ detail: Array.from({ length: 30 }, (_, i) => ({ loc: ["x", i], msg: "m", type: "t" })) }), []).details.length, 10);
+  });
+
+  it("is recorded on a failed publish without echoing the payload", async () => {
+    const t = new TraceBuilder("p", [], "ns");
+    t.add({ key: "root", name: "Root", runType: "chain", start: "2026-10-17T00:00:00.000Z", end: "2026-10-17T00:00:05.000Z", inputs: { a: 1 }, outputs: {}, metadata: {} });
+    const fetchImpl = (async () => new Response(JSON.stringify({ detail: { errors: [{ field: "id", message: "bad id" }] }, input: { echoed: "SENSITIVE" } }), { status: 422, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const r = (await publishTrace(CONFIG, t, fetchImpl)).results[0];
+    assert.deepEqual(r.diagnosis?.details, [{ path: "id", code: "(none)", message: "bad id" }]);
+    assert.ok(!leak.test(JSON.stringify(r)));
   });
 });
