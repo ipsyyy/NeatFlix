@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { collectSecrets } from "@/agents/config/env";
 import { buildCaseTrace } from "@/agents/observability/case-trace";
-import { diagnoseErrorResponse, dottedStamp, langSmithConfigFromEnv, payloadLeaks, publishTrace, sanitize, stableUuidV7, TraceBuilder, validationDetails, type LangSmithConfig } from "@/agents/observability/langsmith";
+import { ACCEPTANCE_WINDOW_MS, diagnoseErrorResponse, dottedStamp, langSmithConfigFromEnv, REPLAY_END_MARGIN_MS, REPLAY_START_MARGIN_MS, shiftForReplay, payloadLeaks, publishTrace, sanitize, stableUuidV7, TraceBuilder, validationDetails, type LangSmithConfig } from "@/agents/observability/langsmith";
 import { MemoryWorkflowStore } from "./memory-store";
 
 const KEY = "lsv2_pt_0123456789abcdef0123456789abcdef_0123456789";
@@ -195,6 +195,59 @@ describe("NativeFrame case trace from the registry", () => {
       assert.equal(parseInt(run.id.replace(/-/g, "").slice(0, 12), 16), Date.parse(run.start_time), `${run.name}: id time is its recorded start`);
     }
     assert.ok(r.trace.feedback.every((f) => v7.test(f.id)));
+  });
+
+  it("replays the recorded trace with one constant shift into the acceptance window, keeping everything else", async () => {
+    const r = await buildCaseTrace(await world({ staleLabels: true }), { caseId: CASE, project: "p", secrets: [] });
+    assert.ok(r.ok);
+    const now = new Date("2026-10-17T12:00:00.000Z");
+    const rep = shiftForReplay(r.trace, now);
+    assert.ok(rep.ok, JSON.stringify(rep));
+    const { runs, feedback, shiftMs, recorded, replayed } = rep.value;
+    assert.ok(shiftMs > 0);
+    assert.equal(Date.parse(replayed.end), now.getTime() - REPLAY_END_MARGIN_MS, "the trace ends just before now");
+    assert.ok(Date.parse(replayed.start) >= now.getTime() - ACCEPTANCE_WINDOW_MS + REPLAY_START_MARGIN_MS, "the root starts safely inside the window");
+    assert.equal(Date.parse(replayed.start) - Date.parse(recorded.start), shiftMs);
+    r.trace.runs.forEach((orig, i) => {
+      const run = runs[i];
+      const meta = run.extra.metadata as Record<string, unknown>;
+      assert.deepEqual([meta.recorded_start_time, meta.recorded_end_time, meta.replay_shift_ms], [orig.start_time, orig.end_time, shiftMs], "recorded times preserved");
+      assert.equal(Date.parse(run.start_time) - Date.parse(orig.start_time), shiftMs, "constant shift");
+      assert.equal(Date.parse(run.end_time) - Date.parse(run.start_time), Date.parse(orig.end_time) - Date.parse(orig.start_time), "duration unchanged");
+      assert.deepEqual([run.id, run.trace_id, run.parent_run_id], [orig.id, orig.trace_id, orig.parent_run_id], "ids and hierarchy unchanged");
+      const segments = run.dotted_order.split(".");
+      assert.equal(segments.length, orig.dotted_order.split(".").length);
+      assert.equal(segments[segments.length - 1], `${dottedStamp(run.start_time)}${run.id}`, "dotted_order uses the replayed start");
+      if (run.parent_run_id) assert.ok(run.dotted_order.startsWith(`${runs.find((x) => x.id === run.parent_run_id)!.dotted_order}.`));
+      assert.equal(Date.parse(run.start_time) <= now.getTime(), true);
+    });
+    const order = (xs: { start_time: string }[]) => xs.map((x, i) => [Date.parse(x.start_time), i] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(([, i]) => i).join();
+    assert.equal(order(runs), order(r.trace.runs), "time ordering unchanged");
+    assert.match(runs[0].name, /\(historical replay\)$/);
+    assert.ok(runs[0].tags.includes("historical-replay") && !runs[1].name.includes("historical replay"));
+    assert.deepEqual(feedback, r.trace.feedback, "evaluations and their ids unchanged");
+    assert.equal(feedback.find((f) => f.key === "prompt_label_currency")?.score, 0);
+    // Idempotent ids: a later replay shifts times differently but keeps every id.
+    const later = shiftForReplay(r.trace, new Date("2026-10-17T15:30:00.000Z"));
+    assert.ok(later.ok && later.value.runs.map((x) => x.id).join() === runs.map((x) => x.id).join() && later.value.shiftMs !== shiftMs);
+    assert.deepEqual(r.trace.runs[0].start_time, recorded.start, "the recorded trace itself is never modified");
+  });
+
+  it("fails closed when the trace cannot fit the window, and accepts the boundary", () => {
+    const now = new Date("2026-10-17T12:00:00.000Z");
+    const span = (ms: number) => {
+      const t = new TraceBuilder("p", [], "ns");
+      const start = "2026-10-15T00:00:00.000Z";
+      t.add({ key: "root", name: "Root", runType: "chain", start, end: new Date(Date.parse(start) + ms).toISOString(), inputs: {}, outputs: {}, metadata: {} });
+      return t;
+    };
+    const max = ACCEPTANCE_WINDOW_MS - REPLAY_START_MARGIN_MS - REPLAY_END_MARGIN_MS;
+    assert.ok(shiftForReplay(span(max), now).ok, "exactly the maximum span fits");
+    const over = shiftForReplay(span(max + 1), now);
+    assert.ok(!over.ok && /too long to fit/.test(over.reason), "one millisecond more fails closed");
+    const future = shiftForReplay(span(1000), new Date("2026-10-14T00:00:00.000Z"));
+    assert.ok(!future.ok && /future/.test(future.reason), "a trace ending after now fails closed");
+    assert.equal(shiftForReplay(new TraceBuilder("p", [], "ns"), now).ok, false, "an empty trace fails closed");
   });
 
   it("scores current prompt labels as 1, and refuses an unknown case", async () => {

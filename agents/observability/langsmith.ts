@@ -178,6 +178,73 @@ export type ErrorDiagnosis = {
   shape: unknown;
   details: ValidationDetail[];
 };
+/** LangSmith accepts a run only if its start_time is within this window of the current time. */
+export const ACCEPTANCE_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** The replayed root starts at least this far inside the window. */
+export const REPLAY_START_MARGIN_MS = 10 * 60 * 1000;
+/** The replayed trace ends this long before now, so nothing is in the future. */
+export const REPLAY_END_MARGIN_MS = 60 * 1000;
+
+export type ReplayedTrace = {
+  runs: TraceRun[];
+  feedback: TraceFeedback[];
+  shiftMs: number;
+  recorded: { start: string; end: string };
+  replayed: { start: string; end: string };
+};
+
+/**
+ * A copy of a recorded trace for publishing as a historical replay: every
+ * start_time, end_time, and dotted_order moves forward by one constant offset
+ * so the whole trace lies inside LangSmith's acceptance window and ends just
+ * before now. Ordering, hierarchy, durations, ids, and evaluations are
+ * unchanged; each run keeps its recorded times and the offset in metadata.
+ * Fails closed if the trace cannot fit with the safety margins.
+ */
+export function shiftForReplay(trace: Pick<TraceBuilder, "runs" | "feedback">, now: Date): { ok: true; value: ReplayedTrace } | { ok: false; reason: string } {
+  if (trace.runs.length === 0) return { ok: false, reason: "The trace has no runs." };
+  const starts = trace.runs.map((r) => Date.parse(r.start_time));
+  const ends = trace.runs.map((r) => Date.parse(r.end_time));
+  const recordedStart = Math.min(...starts);
+  const recordedEnd = Math.max(...ends);
+  const nowMs = now.getTime();
+  const shiftMs = Math.max(0, nowMs - REPLAY_END_MARGIN_MS - recordedEnd);
+  const replayStart = recordedStart + shiftMs;
+  const replayEnd = recordedEnd + shiftMs;
+  if (replayEnd > nowMs) return { ok: false, reason: "The recorded trace ends in the future." };
+  if (replayStart < nowMs - ACCEPTANCE_WINDOW_MS + REPLAY_START_MARGIN_MS) {
+    return { ok: false, reason: `The trace spans ${Math.round((recordedEnd - recordedStart) / 60_000)} minutes, too long to fit LangSmith's 24-hour window with the safety margins.` };
+  }
+  const shifted = (iso: string) => new Date(Date.parse(iso) + shiftMs).toISOString();
+  const dotted = new Map<string, string>();
+  const runs = trace.runs.map((r) => {
+    const start = shifted(r.start_time);
+    const parent = r.parent_run_id ? dotted.get(r.parent_run_id) : undefined;
+    if (r.parent_run_id && parent === undefined) throw new Error("A run precedes its parent.");
+    const order = `${parent ? `${parent}.` : ""}${dottedStamp(start)}${r.id}`;
+    dotted.set(r.id, order);
+    const metadata = { ...(r.extra.metadata as Record<string, unknown>), recorded_start_time: r.start_time, recorded_end_time: r.end_time, replay_shift_ms: shiftMs, replay: "historical replay of recorded case records" };
+    return {
+      ...r,
+      ...(r.parent_run_id ? {} : { name: `${r.name} (historical replay)`, tags: [...r.tags.filter((t) => t !== "historical-replay"), "historical-replay"] }),
+      start_time: start,
+      end_time: shifted(r.end_time),
+      dotted_order: order,
+      extra: { metadata },
+    };
+  });
+  return {
+    ok: true,
+    value: {
+      runs,
+      feedback: trace.feedback.map((f) => ({ ...f })),
+      shiftMs,
+      recorded: { start: new Date(recordedStart).toISOString(), end: new Date(recordedEnd).toISOString() },
+      replayed: { start: new Date(replayStart).toISOString(), end: new Date(replayEnd).toISOString() },
+    },
+  };
+}
+
 export type PublishResult = {
   kind: "run" | "feedback";
   id: string;

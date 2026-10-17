@@ -18,7 +18,7 @@
  */
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { buildCaseTrace } from "@/agents/observability/case-trace";
-import { langSmithConfigFromEnv, payloadLeaks, publishTrace } from "@/agents/observability/langsmith";
+import { langSmithConfigFromEnv, payloadLeaks, publishTrace, shiftForReplay } from "@/agents/observability/langsmith";
 import { createWorkflowStoreFromEnv } from "@/agents/persistence/supabase-store";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
 
@@ -48,12 +48,18 @@ async function main(): Promise<number> {
     const a = await store.getApprovalForReview(r.review_id);
     if (a) identities.add(a.reviewer_user_id);
   }
-  const payload = trace.payload();
+  // Published as a historical replay: one constant shift into LangSmith's acceptance window (fails closed if it cannot fit).
+  const replay = shiftForReplay(trace, new Date());
+  if (!replay.ok) return (out(`The trace cannot be published: ${replay.reason} Nothing was sent.`), 1);
+  const toSend = { runs: replay.value.runs, feedback: replay.value.feedback };
+  const payload = JSON.stringify(toSend);
   const leaks = payloadLeaks(payload, secrets, [...identities]);
 
   out(`\nTrace for ${CASE_ID} (${trace.runs.length} runs, ${trace.feedback.length} evaluation results, ${payload.length} bytes, trace id ${built.root.trace_id}):`);
   const depth = (order: string) => order.split(".").length - 1;
   for (const r of trace.runs) out(`  ${"  ".repeat(depth(r.dotted_order))}${r.name} [${r.run_type}] ${r.start_time}`);
+  out(`\nRecorded time range: ${replay.value.recorded.start} → ${replay.value.recorded.end}`);
+  out(`Replayed time range:  ${replay.value.replayed.start} → ${replay.value.replayed.end} (replay_shift_ms ${replay.value.shiftMs}; recorded times kept in metadata)`);
   out("\nEvaluations on the case run:");
   for (const e of evaluations) out(`  ${e.key}: ${e.score} — ${e.comment}`);
   const perRun = trace.feedback.length - evaluations.length;
@@ -66,7 +72,7 @@ async function main(): Promise<number> {
   if (diagnoseRoot !== undefined) {
     if (!config.ok) return (out(`LangSmith is off: ${config.reason} Nothing was sent.`), 1);
     // Exactly one request: the root run only. No child run or feedback, even if it is accepted.
-    const result = (await publishTrace(config.value, { runs: [built.root], feedback: [] }, fetch, secrets)).results[0];
+    const result = (await publishTrace(config.value, { runs: [toSend.runs[0]], feedback: [] }, fetch, secrets)).results[0];
     out(`\nRoot-run diagnostic (1 request): ${result.outcome}${result.status === null ? " (no response)" : ` (HTTP ${result.status})`}`);
     if (result.diagnosis) {
       out(`  content type: ${result.diagnosis.contentType}`);
@@ -83,7 +89,7 @@ async function main(): Promise<number> {
   }
   if (!config.ok) return (out(`LangSmith is off: ${config.reason} Nothing was sent.`), 1);
 
-  const summary = await publishTrace(config.value, trace, fetch, secrets);
+  const summary = await publishTrace(config.value, toSend, fetch, secrets);
   out(`\nPublished: ${summary.created} created, ${summary.existing} already present, ${summary.failed} failed (of ${summary.attempted} sent); ${summary.skipped} skipped (parent failed).`);
   for (const r of summary.results.filter((x) => x.outcome === "failed")) {
     out(`  failed ${r.kind} ${r.id}: ${r.status === null ? "no response" : `HTTP ${r.status}`}`);
