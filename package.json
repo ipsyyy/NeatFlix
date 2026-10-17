@@ -24,7 +24,9 @@
     "agents:deliver-plan-v3": "tsx agents/scripts/deliver-plan-v3.ts",
     "agents:record-human-approval": "tsx agents/scripts/record-human-approval.ts",
     "agents:masky-identities": "tsx agents/scripts/masky-identities.ts",
-    "langsmith:trace-case": "tsx agents/scripts/langsmith-trace-case.ts"
+    "langsmith:trace-case": "tsx agents/scripts/langsmith-trace-case.ts",
+    "security:audit": "npm audit --omit=dev --audit-level=high",
+    "security:snyk": "snyk test --all-projects --severity-threshold=high && snyk code test --severity-threshold=high"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
