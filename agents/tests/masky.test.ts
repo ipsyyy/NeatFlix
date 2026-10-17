@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import sharp from "sharp";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
-import { MaskyClient, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
+import { describeShape, MaskyClient, MaskyError, type MaskyApi, type MaskyVoice, type SpeakState } from "@/agents/masky/client";
+import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, type AvatarLedger, type AvatarLedgerEvent } from "@/agents/masky/ledger";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   downloadProviderMedia,
   EMPTY_MANIFEST,
@@ -18,7 +21,7 @@ import {
   type GenerationDeps,
   type IdentityManifest,
 } from "@/agents/masky/generate";
-import { AGENT_IDENTITIES, portraitSvg, validateIdentities, type AgentIdentity } from "@/agents/masky/identities";
+import { AGENT_IDENTITIES, identitySpecSha256, portraitSvg, validateIdentities, type AgentIdentity } from "@/agents/masky/identities";
 import { PORTRAIT_HANDOFF_TTL_SECONDS, SupabasePrivateStorage, type PortraitHandoffStorage } from "@/agents/persistence/private-storage";
 
 const VOICES: MaskyVoice[] = [
@@ -51,6 +54,7 @@ class FakeStorage implements PortraitHandoffStorage {
 
 class FakeMasky implements MaskyApi {
   calls: string[] = [];
+  failStartFor: AgentRole | null = null;
   avatarInputs: { imageUrl: string; voiceId: string; displayName: string }[] = [];
   speech: { text: string; output: string }[] = [];
   failSpeechFor: AgentRole | null = null;
@@ -68,10 +72,15 @@ class FakeMasky implements MaskyApi {
   }
   async primaryImageAssetId(avatarId: string) {
     this.calls.push("images");
-    return `asset-${avatarId}`;
+    return { assetId: `asset-${avatarId}`, unexpectedShape: null };
+  }
+  async listAvatars() {
+    this.calls.push("list-avatars");
+    return [];
   }
   async startSpeech(avatarId: string, text: string, output: "audio" | "video") {
     this.calls.push("speak");
+    if (AGENT_ROLES[Number(avatarId.split("-").pop()) - 1] === this.failStartFor) throw new MaskyError(502, "upstream failure");
     this.speech.push({ text, output });
     return { generationId: `gen-${avatarId}`, reused: false };
   }
@@ -85,13 +94,26 @@ class FakeMasky implements MaskyApi {
   }
 }
 
+class FakeLedger implements AvatarLedger {
+  events: AvatarLedgerEvent[] = [];
+  fail = false;
+  constructor(private readonly calls: string[]) {}
+  async append(e: AvatarLedgerEvent) {
+    this.calls.push("ledger");
+    if (this.fail) throw new Error("disk full");
+    this.events.push(e);
+  }
+}
+
 function deps(over: Partial<GenerationDeps> = {}) {
   const masky = new FakeMasky();
+  const ledger = new FakeLedger(masky.calls);
   const storage = new FakeStorage();
   const downloads: string[] = [];
   let current: "audio" | "video" = "audio";
   const d: GenerationDeps = {
     masky,
+    ledger,
     storage,
     renderPng: async (svg) => new Uint8Array(await sharp(Buffer.from(svg)).png().toBuffer()),
     download: async (url) => {
@@ -105,7 +127,7 @@ function deps(over: Partial<GenerationDeps> = {}) {
     maxPolls: 5,
     ...over,
   };
-  return { d, masky, storage, downloads };
+  return { d, masky, storage, downloads, ledger };
 }
 
 describe("Masky identity specs", () => {
@@ -364,5 +386,111 @@ describe("Masky privacy boundaries", () => {
     }
     assert.deepEqual(["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fe80::1", "fd12::1", "::ffff:10.0.0.1"].filter((a) => !isNonPublicAddress(a)), []);
     assert.deepEqual(["93.184.216.34", "8.8.8.8", "2606:4700::1111"].filter(isNonPublicAddress), []);
+  });
+});
+
+describe("Masky avatar recovery: no unrecorded avatar", () => {
+  it("records every avatar in the ledger before any later request, so no later failure can orphan it", async () => {
+    const failures: [string, (x: ReturnType<typeof deps>) => void, string][] = [
+      ["speech request", (x) => (x.masky.failStartFor = "scene-scout"), "speech"],
+      ["speech render", (x) => (x.masky.failSpeechFor = "scene-scout"), "speech"],
+      ["download", (x) => (x.d.download = async () => Promise.reject(new Error("network"))), "download"],
+      ["validation", (x) => (x.d.probe = async () => ({ durationSeconds: 0, hasAudio: false, hasVideo: false, width: null, height: null })), "download"],
+      ["private storage", (x) => (x.storage.uploadNew = async (ref: string) => { if (ref.includes("/spoken/")) throw new Error("storage down"); return "created" as const; }), "download"],
+    ];
+    for (const [name, inject, stage] of failures) {
+      const x = deps();
+      inject(x);
+      const r = await generateIdentities(x.d);
+      assert.equal(r.failed?.stage, stage, name);
+      assert.equal(x.masky.avatarInputs.length, x.ledger.events.length, `${name}: every created avatar is recorded`);
+      assert.ok(x.ledger.events.length >= 1, name);
+      // In the call order, each "avatar" is immediately followed by its "ledger" write.
+      x.masky.calls.forEach((c, i) => c === "avatar" && assert.equal(x.masky.calls[i + 1], "ledger", `${name}: ledger right after creation`));
+      assert.ok(!x.masky.calls.includes("images"), "the image lookup is not on the critical path");
+    }
+  });
+
+  it("stops before any further request when the ledger cannot be written, and still reports the avatar id", async () => {
+    const lines: string[] = [];
+    const x = deps({ log: (l) => lines.push(l) });
+    x.ledger.fail = true;
+    const r = await generateIdentities(x.d);
+    assert.deepEqual([r.failed?.role, r.failed?.stage], ["content-curator", "ledger"]);
+    assert.deepEqual(x.masky.calls, ["voices", "avatar", "ledger"], "nothing after the failed ledger write");
+    assert.ok(lines.some((l) => l.includes("av-1")), "the avatar id is printed as a backstop");
+  });
+
+  it("reuses a recorded avatar and its voice instead of creating another", async () => {
+    const x = deps();
+    const r = await generateIdentities(x.d, { reuse: { "content-curator": { maskyAvatarId: "adopted-1", voiceId: "v-extra" } } });
+    assert.equal(r.failed, null, JSON.stringify(r.failed));
+    assert.equal(x.masky.avatarInputs.length, 4, "only four new avatars");
+    assert.equal(x.ledger.events.length, 4);
+    assert.deepEqual([r.manifest.entries["content-curator"]!.avatar.maskyAvatarId, r.manifest.entries["content-curator"]!.voice.id], ["adopted-1", "v-extra"]);
+    assert.ok(!x.masky.avatarInputs.some((a) => a.voiceId === "v-extra"), "the reused voice stays distinct");
+    assert.deepEqual(validateManifest(r.manifest), []);
+    const clash = await generateIdentities(deps().d, { reuse: { "content-curator": { maskyAvatarId: "adopted-1", voiceId: "v-extra" } }, voiceOverrides: { "content-curator": "v-warm" } });
+    assert.equal(clash.failed?.stage, "voices", "a reused avatar keeps its voice");
+  });
+
+  it("gives the Release Governor the most authoritative voice and the Campaign Matcher an analytical one, all distinct", () => {
+    const real: MaskyVoice[] = [
+      { id: "a", name: "Warm Female Assistant Voice", source: "preset" },
+      { id: "b", name: "Soft Male Conversationalist", source: "preset" },
+      { id: "c", name: "Female Meditation Guide", source: "preset" },
+      { id: "d", name: "Deep Male Conversational Voice", source: "preset" },
+      { id: "e", name: "Warm American Female", source: "preset" },
+      { id: "f", name: "Authoritative Female Narrator", source: "preset" },
+      { id: "g", name: "Analytical Professional Female", source: "preset" },
+      { id: "h", name: "Confident Young Male", source: "preset" },
+    ];
+    const r = resolveVoices(real, { "content-curator": "a" });
+    assert.ok(r.ok);
+    assert.equal(r.value["release-governor"].name, "Authoritative Female Narrator");
+    assert.equal(r.value["campaign-matcher"].name, "Analytical Professional Female");
+    assert.ok(!Object.values(r.value).some((v) => /meditation/i.test(v.name)), "unsuitable styles are avoided");
+    assert.equal(new Set(Object.values(r.value).map((v) => v.id)).size, 5);
+    // The Governor chooses first: an "authoritative" voice goes to it even if another role could match it.
+    const contested = resolveVoices([...real.filter((v) => v.id !== "g"), { id: "z", name: "Authoritative Analytical Voice", source: "preset" }]);
+    assert.ok(contested.ok && contested.value["release-governor"].id === "f");
+  });
+
+  it("keeps the ledger append-only and identifier-only, and adopts only on exactly one exact match", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nf-ledger-"));
+    try {
+      const path = join(dir, "avatar-ledger.jsonl");
+      const ledger = new FileAvatarLedger(path);
+      const event: AvatarLedgerEvent = { event: "avatar-adopted", role: "content-curator", maskyAvatarId: "av-123", displayName: "Iris Vale, NativeFrame Content Curator", voice: { id: "voice_1", name: "Warm" }, specSha256: identitySpecSha256(AGENT_IDENTITIES["content-curator"]), source: "GET /avatars", at: "2026-10-17T00:00:00.000Z" };
+      await ledger.append(event);
+      const first = readFileSync(path, "utf8");
+      await ledger.append({ ...event, event: "avatar-created", role: "scene-scout", maskyAvatarId: "av-456", voice: { id: "voice_2", name: "Young" } });
+      assert.ok(readFileSync(path, "utf8").startsWith(first), "earlier lines are never rewritten");
+      assert.equal(ledger.read().length, 2);
+      await assert.rejects(ledger.append({ ...event, source: "https://masky.ai/api/avatars" }), /identifiers only/);
+      await assert.rejects(ledger.append({ ...event, maskyAvatarId: "" }), /avatar id/);
+      assert.ok(avatarsByRole(ledger.read()).ok);
+      assert.equal(avatarsByRole([event, { ...event, maskyAvatarId: "av-other" }]).ok, false, "two avatars for one role");
+      assert.equal(avatarsByRole([event, { ...event, role: "scene-scout", maskyAvatarId: "av-x" }]).ok, false, "a shared voice");
+      writeFileSync(path, `${first}{"event":"avatar-created","role":"nope"}\n`);
+      assert.throws(() => ledger.read(), /line 2 is invalid/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const name = "Iris Vale, NativeFrame Content Curator";
+    assert.deepEqual(findAvatarByDisplayName([{ avatarId: "x1", displayName: name }, { avatarId: "x2", displayName: "Other" }], name), { ok: true, avatarId: "x1" });
+    assert.equal(findAvatarByDisplayName([], name).ok, false, "zero matches");
+    assert.equal(findAvatarByDisplayName([{ avatarId: "x1", displayName: name }, { avatarId: "x2", displayName: name }], name).ok, false, "two matches");
+    assert.equal(findAvatarByDisplayName([{ avatarId: "x1", displayName: `${name} ` }], name).ok, false, "never a near match");
+  });
+
+  it("reports an unexpected image-list shape only as redacted structure, never failing or leaking values", async () => {
+    const body = { primary: { url: "https://cdn.example/p.png?token=abc", assetId: "secret-asset" }, items: [{ href: "https://cdn.example/x", n: 3 }] };
+    const fetchImpl = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+    const r = await new MaskyClient("mky_testkey12345", fetchImpl).primaryImageAssetId("av1");
+    assert.equal(r.assetId, null);
+    assert.deepEqual(r.unexpectedShape, { items: [{ href: "string", n: "number" }], primary: { assetId: "string", url: "string" } });
+    assert.ok(!/https|token|secret-asset/.test(JSON.stringify(r.unexpectedShape)));
+    assert.deepEqual(describeShape(null), "null");
   });
 });

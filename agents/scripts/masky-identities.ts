@@ -9,16 +9,24 @@
  *
  * Generate (only with --generate=nativeframe-agent-identities-v1): one pass,
  * stopping at the first failure: list Masky voices; per agent, store the
- * portrait privately, create one avatar (not publicly renderable) from a
- * 5-minute portrait handoff URL, request the one spoken line verbatim, download
- * the result server-side, validate it, and store it privately. Writes the
- * safe-metadata manifest (identifiers only) only when all five identities
- * complete and validate; a partial batch is recorded separately and every
- * agent keeps its local fallback.
+ * portrait privately; reuse the avatar recorded in the append-only avatar
+ * ledger, or create one (not publicly renderable) from a 5-minute portrait
+ * handoff URL and record its id in the ledger before any later request;
+ * request the one spoken line verbatim, download the result server-side,
+ * validate it, and store it privately. Writes the safe-metadata manifest
+ * (identifiers only) only when all five identities complete and validate;
+ * otherwise every agent keeps its local fallback.
+ *
+ * Adopt (only with --adopt=<role> --voice-id=<id> --voice-name=<name>): one
+ * read-only GET /avatars; records the single avatar whose display name is
+ * exactly the role's in the ledger, so a batch reuses it. Zero or several
+ * matches: nothing is recorded. Creates, changes, or deletes nothing.
+ *
  * Starts no agent and touches no case, plan, media, review, or approval record.
  *
  * Run (preflight): npm run agents:masky-identities
  * Run (generate):  npm run agents:masky-identities -- --generate=nativeframe-agent-identities-v1 [--voices=<role>=<voiceId>,...]
+ * Run (adopt):     npm run agents:masky-identities -- --adopt=<role> --voice-id=<voiceId> --voice-name="<name>"
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -27,15 +35,16 @@ import sharp from "sharp";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT } from "@/agents/masky/client";
-import { downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest } from "@/agents/masky/generate";
-import { AGENT_IDENTITIES, estimateSpeechSeconds, portraitSvg, validateIdentities } from "@/agents/masky/identities";
+import { avatarDisplayName, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type ReusedAvatar } from "@/agents/masky/generate";
+import { AGENT_IDENTITIES, estimateSpeechSeconds, identitySpecSha256, portraitSvg, validateIdentities } from "@/agents/masky/identities";
+import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName } from "@/agents/masky/ledger";
 import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
 import { redactSecrets, safeErrorMessage } from "@/agents/security/redact";
 
 const GENERATE_TOKEN = "nativeframe-agent-identities-v1";
 const MANIFEST_PATH = resolve(process.cwd(), "agents/masky/generated-identities.json");
-/** A partial batch is recorded here (its avatars exist at Masky), never in the live manifest: every agent keeps its fallback. */
-const INCOMPLETE_PATH = resolve(process.cwd(), "agents/masky/incomplete-identities.json");
+/** Append-only record of every avatar created or adopted (agents/masky/ledger.ts). */
+const LEDGER_PATH = resolve(process.cwd(), "agents/masky/avatar-ledger.jsonl");
 const MAX_POLLS = 48;
 const POLL_MS = 5_000;
 
@@ -68,10 +77,34 @@ async function main(): Promise<number> {
   const manifestErrors = validateManifest(existing);
   if (manifestErrors.length > 0) return (out(`The recorded manifest is invalid: ${manifestErrors.join(" ")}`), 1);
   const recorded = Object.keys(existing.entries);
+  const ledger = new FileAvatarLedger(LEDGER_PATH);
+  const avatars = avatarsByRole(ledger.read());
+  if (!avatars.ok) return (out(`The avatar ledger cannot be used: ${avatars.errors.join(" ")}`), 1);
+  for (const [role, e] of Object.entries(avatars.value)) {
+    if (e!.specSha256 !== identitySpecSha256(AGENT_IDENTITIES[role as AgentRole])) return (out(`${role}: the recorded avatar was made for a different identity spec. Nothing was done.`), 1);
+  }
+  const reuse: Partial<Record<AgentRole, ReusedAvatar>> = Object.fromEntries(Object.entries(avatars.value).map(([r, e]) => [r, { maskyAvatarId: e!.maskyAvatarId, voiceId: e!.voice.id }]));
   const key = process.env[MASKY_API_KEY_ENV]?.trim() ?? "";
   out(`Masky key (${MASKY_API_KEY_ENV}): ${key ? (MASKY_KEY_FORMAT.test(key) ? "configured, format ok" : "configured, UNEXPECTED FORMAT") : "MISSING"}; Supabase private storage: ${createPrivateStorageFromEnv(process.env) ? "configured" : "MISSING"}.`);
-  const incomplete = existsSync(INCOMPLETE_PATH);
-  out(`Recorded identities: ${recorded.length === 0 ? "none" : recorded.join(", ")}${incomplete ? "; an INCOMPLETE batch is recorded" : ""}\n`);
+  out(`Recorded identities (live manifest): ${recorded.length === 0 ? "none" : recorded.join(", ")}`);
+  out(`Recorded avatars (ledger): ${Object.keys(avatars.value).length === 0 ? "none" : Object.entries(avatars.value).map(([r, e]) => `${r}=${e!.maskyAvatarId} (${e!.event}, voice ${e!.voice.name})`).join("; ")}\n`);
+
+  const adopt = process.argv.find((a) => a.startsWith("--adopt="))?.slice("--adopt=".length);
+  if (adopt !== undefined) {
+    const voiceId = process.argv.find((a) => a.startsWith("--voice-id="))?.slice("--voice-id=".length) ?? "";
+    const voiceName = process.argv.find((a) => a.startsWith("--voice-name="))?.slice("--voice-name=".length) ?? "";
+    if (!(AGENT_ROLES as readonly string[]).includes(adopt) || !voiceId || !voiceName) return (out("Adopt needs --adopt=<role> --voice-id=<id> --voice-name=<name>. Nothing was done."), 1);
+    const role = adopt as AgentRole;
+    if (avatars.value[role]) return (out(`${role} already has a recorded avatar. Nothing was done.`), 1);
+    const masky = createMaskyClientFromEnv(process.env);
+    if (!masky) return (out("Masky is not configured. Nothing was done."), 1);
+    const displayName = avatarDisplayName(AGENT_IDENTITIES[role]);
+    const found = findAvatarByDisplayName(await masky.listAvatars(), displayName);
+    if (!found.ok) return (out(`${found.error} Nothing was recorded.`), 1);
+    await ledger.append({ event: "avatar-adopted", role, maskyAvatarId: found.avatarId, displayName, voice: { id: voiceId, name: voiceName }, specSha256: identitySpecSha256(AGENT_IDENTITIES[role]), source: "GET /avatars, exact display-name match; voice as selected by the creating run", at: new Date().toISOString() });
+    out(`Adopted ${role} avatar ${found.avatarId} ("${displayName}", voice ${voiceName}) into agents/masky/avatar-ledger.jsonl. The next batch reuses it.`);
+    return 0;
+  }
 
   let total = 0;
   for (const role of AGENT_ROLES) {
@@ -90,8 +123,8 @@ async function main(): Promise<number> {
     [
       "",
       "Planned calls for one generation run (stops at the first failure):",
-      "  Masky: GET /voices ×1; per agent POST /avatars ×1, GET /avatars/{id}/images ×1, POST /avatars/{id}/speak ×1, GET /avatars/speak/{id} ≤48 polls (5 s apart); one server-side download of each result.",
-      "  Supabase Storage: per agent one private portrait upload, one 5-minute portrait handoff URL (given only to Masky), one private spoken-media upload.",
+      `  Masky: GET /voices ×1; POST /avatars for each of the ${AGENT_ROLES.length - Object.keys(reuse).length} agent(s) without a recorded avatar (each recorded in the ledger before its next request); per agent POST /avatars/{id}/speak ×1 and GET /avatars/speak/{id} ≤48 polls (5 s apart); one server-side download of each result.`,
+      "  Supabase Storage: per agent one private portrait upload (an identical existing portrait is reused), one 5-minute portrait handoff URL only for a new avatar, one private spoken-media upload.",
       "  No Claude, BAND, Gemini, Reactor, or LangSmith call; no case, plan, media, review, or approval record is touched.",
       "Expected outputs: 5 Masky avatars (not publicly renderable), 5 private portraits (storage://nf-media/agents/portraits/<role>-v1.png),",
       "  4 private audio results and 1 private talking-head video (storage://nf-media/agents/spoken/<role>-v1.<ext>), and agents/masky/generated-identities.json (identifiers and checksums only).",
@@ -104,24 +137,20 @@ async function main(): Promise<number> {
     out(`\nPreflight only: no network request was made. To generate: --generate=${GENERATE_TOKEN}`);
     return 0;
   }
-  if (recorded.length > 0 || incomplete) return (out("Identities (or an incomplete batch) are already recorded; this run never creates a second batch. Nothing was done."), 1);
+  if (recorded.length > 0) return (out("All identities are already recorded; this run never creates a second batch. Nothing was done."), 1);
   const masky = createMaskyClientFromEnv(process.env);
   const storage = createPrivateStorageFromEnv(process.env);
   if (!masky || !storage) return (out("Masky or Supabase is not configured. Nothing was done."), 1);
 
   const result = await generateIdentities(
-    { masky, storage, renderPng, download: (url) => downloadProviderMedia(url), probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
-    { existing, voiceOverrides },
+    { masky, ledger, storage, renderPng, download: (url) => downloadProviderMedia(url), probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
+    { existing, voiceOverrides, reuse },
   );
   if (result.voices) out(`\nVoices: ${AGENT_ROLES.map((r) => `${r}=${result.voices![r].name} (${result.voices![r].id})`).join("; ")}`);
   const complete = !result.failed && result.completed.length === AGENT_ROLES.length && validateManifest(result.manifest).length === 0;
   if (!complete) {
-    if (result.completed.length > 0) {
-      writeFileSync(INCOMPLETE_PATH, `${JSON.stringify(result.manifest, null, 2)}\n`);
-      out(`Recorded the ${result.completed.length} avatar(s) created before the stop in agents/masky/incomplete-identities.json (not used by the demo).`);
-    }
     out(`STOPPED${result.failed ? ` at ${result.failed.role} (${result.failed.stage}): ${result.failed.error}` : ": the batch did not validate."}`);
-    out("The batch is incomplete: no live manifest was written, and all five agents keep the local fallback portrait and caption.");
+    out("The batch is incomplete: no live manifest was written, and all five agents keep the local fallback portrait and caption. Every avatar created is recorded in agents/masky/avatar-ledger.jsonl.");
     return 1;
   }
   writeFileSync(MANIFEST_PATH, `${JSON.stringify(result.manifest, null, 2)}\n`);

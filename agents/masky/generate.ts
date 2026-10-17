@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import type { PortraitHandoffStorage } from "@/agents/persistence/private-storage";
 import type { MaskyApi, MaskyVoice, SpeakOutput } from "./client";
+import type { AvatarLedger } from "./ledger";
 import { AGENT_IDENTITIES, estimateSpeechSeconds, identitySpecSha256, portraitSvg, validateIdentities, type AgentIdentity } from "./identities";
 
 /**
@@ -60,39 +61,50 @@ export function estimateCredits(identity: AgentIdentity): number {
   return Math.round(estimateSpeechSeconds(identity.spokenLine) * rate * 10_000) / 10_000;
 }
 
+/** Voice styles that do not suit a release-review demo. */
+const AVOIDED_VOICES = /meditation|asmr|whisper|sleep|lullaby|child|kid|cartoon/i;
+/** The Release Governor chooses first, so it gets the most authoritative voice; then the other roles in order. */
+const VOICE_PRIORITY: readonly AgentRole[] = ["release-governor", "content-curator", "scene-scout", "campaign-matcher", "placement-director"];
+
 /**
- * Chooses five distinct voices: an override when given, otherwise the first
- * preset whose name matches a role's hints (in hint order), otherwise the next
- * unused preset by id. Fails closed if five distinct voices are not available.
+ * Chooses five distinct voices. Fixed voices (overrides, and the voices of
+ * reused avatars) come first. Then, in priority order, each role takes the
+ * unused preset matching its earliest voice hint (avoiding unsuitable styles),
+ * otherwise the next unused suitable preset by id. Fails closed if five
+ * distinct voices are not available.
  */
-export function resolveVoices(voices: readonly MaskyVoice[], overrides: Partial<Record<AgentRole, string>> = {}): { ok: true; value: Record<AgentRole, MaskyVoice> } | { ok: false; errors: string[] } {
+export function resolveVoices(voices: readonly MaskyVoice[], fixed: Partial<Record<AgentRole, string>> = {}): { ok: true; value: Record<AgentRole, MaskyVoice> } | { ok: false; errors: string[] } {
   const byId = new Map(voices.map((v) => [v.id, v] as const));
-  const presets = [...voices].filter((v) => !v.source || v.source === "preset").sort((a, b) => a.id.localeCompare(b.id));
+  const presets = [...voices].filter((v) => (!v.source || v.source === "preset") && !AVOIDED_VOICES.test(v.name)).sort((a, b) => a.id.localeCompare(b.id));
   const used = new Set<string>();
   const chosen: Partial<Record<AgentRole, MaskyVoice>> = {};
   const errors: string[] = [];
   for (const role of AGENT_ROLES) {
-    const override = overrides[role];
-    if (override) {
-      const v = byId.get(override);
-      if (!v) errors.push(`${role}: voice ${override} is not in Masky's voice list.`);
-      else if (used.has(v.id)) errors.push(`${role}: voice ${override} is already used.`);
-      else {
-        chosen[role] = v;
-        used.add(v.id);
-      }
+    const id = fixed[role];
+    if (!id) continue;
+    const v = byId.get(id);
+    if (!v) errors.push(`${role}: voice ${id} is not in Masky's voice list.`);
+    else if (used.has(v.id)) errors.push(`${role}: voice ${id} is already used.`);
+    else {
+      chosen[role] = v;
+      used.add(v.id);
     }
   }
-  for (const role of AGENT_ROLES) {
-    if (chosen[role] || overrides[role]) continue;
-    const hinted = AGENT_IDENTITIES[role].voiceHints.map((h) => presets.find((v) => !used.has(v.id) && v.name.toLowerCase().includes(h.toLowerCase()))).find(Boolean);
-    const v = hinted ?? presets.find((p) => !used.has(p.id));
-    if (!v) {
+  for (const role of VOICE_PRIORITY) {
+    if (chosen[role] || fixed[role]) continue;
+    const hints = AGENT_IDENTITIES[role].voiceHints.map((h) => h.toLowerCase());
+    const rank = (v: MaskyVoice) => {
+      const i = hints.findIndex((h) => v.name.toLowerCase().includes(h));
+      return i === -1 ? Number.POSITIVE_INFINITY : i;
+    };
+    const candidates = presets.filter((v) => !used.has(v.id));
+    const best = [...candidates].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id))[0];
+    if (!best) {
       errors.push(`${role}: no distinct voice is available.`);
       continue;
     }
-    chosen[role] = v;
-    used.add(v.id);
+    chosen[role] = best;
+    used.add(best.id);
   }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, value: chosen as Record<AgentRole, MaskyVoice> };
 }
@@ -146,6 +158,9 @@ export type IdentityPresentation = {
   | { mode: "fallback"; portraitSvg: string; spoken: null; disclosure: string }
 );
 
+/** The Masky display name of a role's avatar. */
+export const avatarDisplayName = (identity: AgentIdentity) => `${identity.characterName}, NativeFrame ${identity.title}`;
+
 export const FALLBACK_DISCLOSURE = "Masky identity unavailable: showing NativeFrame's local portrait and the result as a caption, without voice.";
 
 export function presentIdentity(role: AgentRole, manifest: unknown): IdentityPresentation {
@@ -163,6 +178,8 @@ export type MediaProbe = { durationSeconds: number; hasAudio: boolean; hasVideo:
 
 export type GenerationDeps = {
   masky: MaskyApi;
+  /** Append-only avatar record, written immediately after each avatar is created. */
+  ledger: AvatarLedger;
   storage: PortraitHandoffStorage;
   renderPng: (svg: string) => Promise<Uint8Array>;
   /** Downloads provider media server-side. The URL is never logged or stored. */
@@ -185,7 +202,13 @@ async function storeOnce(storage: PortraitHandoffStorage, ref: string, bytes: Ui
   }
 }
 
-export async function generateIdentities(deps: GenerationDeps, options: { existing?: IdentityManifest; voiceOverrides?: Partial<Record<AgentRole, string>> } = {}): Promise<GenerationResult> {
+/** An avatar already created (or adopted) for a role, recorded in the ledger, to reuse instead of creating another. */
+export type ReusedAvatar = { maskyAvatarId: string; voiceId: string };
+
+export async function generateIdentities(
+  deps: GenerationDeps,
+  options: { existing?: IdentityManifest; voiceOverrides?: Partial<Record<AgentRole, string>>; reuse?: Partial<Record<AgentRole, ReusedAvatar>> } = {},
+): Promise<GenerationResult> {
   const clock = deps.clock ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const log = deps.log ?? (() => {});
@@ -200,7 +223,12 @@ export async function generateIdentities(deps: GenerationDeps, options: { existi
   }
   let voices: Record<AgentRole, MaskyVoice>;
   try {
-    const resolved = resolveVoices(await deps.masky.listVoices(), options.voiceOverrides);
+    const reuse = options.reuse ?? {};
+    for (const role of Object.keys(reuse) as AgentRole[]) {
+      if (options.voiceOverrides?.[role] && options.voiceOverrides[role] !== reuse[role]!.voiceId) return result({ role, stage: "voices", error: "A reused avatar keeps the voice it was created with." });
+    }
+    const fixed = { ...options.voiceOverrides, ...Object.fromEntries(Object.entries(reuse).map(([r, a]) => [r, a!.voiceId])) };
+    const resolved = resolveVoices(await deps.masky.listVoices(), fixed);
     if (!resolved.ok) return result({ role: "content-curator", stage: "voices", error: resolved.errors.join(" ") });
     voices = resolved.value;
   } catch (error) {
@@ -216,10 +244,29 @@ export async function generateIdentities(deps: GenerationDeps, options: { existi
       await storeOnce(deps.storage, portraitRef, png, "image/png");
 
       stage = "avatar";
-      const handoff = await deps.storage.createPortraitHandoffUrl(portraitRef);
-      const { avatarId } = await deps.masky.createAvatar({ displayName: `${identity.characterName}, NativeFrame ${identity.title}`, imageUrl: handoff, personalityPrompt: identity.personality, voiceId: voices[role].id });
-      const assetId = await deps.masky.primaryImageAssetId(avatarId);
-      log(`${role}: avatar ${avatarId} with voice ${voices[role].name}`);
+      const reused = options.reuse?.[role];
+      let avatarId: string;
+      if (reused) {
+        avatarId = reused.maskyAvatarId;
+        log(`${role}: reusing recorded avatar ${avatarId} with voice ${voices[role].name}`);
+      } else {
+        const displayName = avatarDisplayName(identity);
+        const handoff = await deps.storage.createPortraitHandoffUrl(portraitRef);
+        avatarId = (await deps.masky.createAvatar({ displayName, imageUrl: handoff, personalityPrompt: identity.personality, voiceId: voices[role].id })).avatarId;
+        // Record the avatar before any later request, so no later failure can leave it unrecorded.
+        log(`${role}: created avatar ${avatarId} with voice ${voices[role].name}`);
+        stage = "ledger";
+        await deps.ledger.append({
+          event: "avatar-created",
+          role,
+          maskyAvatarId: avatarId,
+          displayName,
+          voice: { id: voices[role].id, name: voices[role].name },
+          specSha256: identitySpecSha256(identity),
+          source: "POST /avatars",
+          at: clock().toISOString(),
+        });
+      }
 
       stage = "speech";
       const started = await deps.masky.startSpeech(avatarId, identity.spokenLine, identity.spokenOutput);
@@ -249,7 +296,7 @@ export async function generateIdentities(deps: GenerationDeps, options: { existi
         characterName: identity.characterName,
         specSha256: identitySpecSha256(identity),
         voice: { id: voices[role].id, name: voices[role].name },
-        avatar: { maskyAvatarId: avatarId, maskyPrimaryImageAssetId: assetId, publiclyRenderable: false },
+        avatar: { maskyAvatarId: avatarId, maskyPrimaryImageAssetId: null, publiclyRenderable: false },
         portrait: { storageRef: portraitRef, checksum: sha(png), mimeType: "image/png", width: 1024, height: 1024 },
         spoken: { output: identity.spokenOutput, text: identity.spokenLine, maskyGenerationId: started.generationId, reused: started.reused, storageRef: spokenRef, checksum: sha(media.bytes), mimeType: mime, durationSeconds: Math.round(probe.durationSeconds * 1000) / 1000 },
         provenance: { provider: "masky", api: "masky.ai/api", createdAt: clock().toISOString(), estimatedCredits: estimateCredits(identity) },

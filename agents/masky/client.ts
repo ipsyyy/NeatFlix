@@ -28,7 +28,16 @@ const id = z.string().min(1).max(200);
 const VoicesResponse = z.object({ voices: z.array(z.object({ id, name: z.string().max(200), source: z.string().max(60).optional() }).passthrough()) }).passthrough();
 const AvatarIds = z.object({ avatarId: id, avatarOwnerUserId: id.optional() }).passthrough();
 const CreateAvatarResponse = z.object({ avatar: AvatarIds.optional(), avatarId: id.optional() }).passthrough();
-const ImagesResponse = z.object({ images: z.array(z.object({ url: z.string().url(), assetId: id.optional(), isPrimary: z.boolean().optional() }).passthrough()) }).passthrough();
+const ImagesResponse = z.object({ images: z.array(z.object({ assetId: id.optional(), isPrimary: z.boolean().optional() }).passthrough()) }).passthrough();
+const AvatarsResponse = z.object({ avatars: z.array(z.object({ avatarId: id, displayName: z.string().max(300).nullish() }).passthrough()) }).passthrough();
+
+/** A response's structure with every value removed: key names and value types only, for diagnosing an unexpected shape. */
+export function describeShape(value: unknown, depth = 0): unknown {
+  if (depth > 3) return "…";
+  if (Array.isArray(value)) return value.length === 0 ? [] : [describeShape(value[0], depth + 1)];
+  if (typeof value === "object" && value !== null) return Object.fromEntries(Object.keys(value).sort().slice(0, 30).map((k) => [k.replace(/[^\w.-]/g, "_").slice(0, 40), describeShape((value as Record<string, unknown>)[k], depth + 1)]));
+  return value === null ? "null" : typeof value;
+}
 const SpeakStart = z.object({ generationId: id.optional(), id: id.optional(), reused: z.boolean().optional() }).passthrough();
 const SpeakStatus = z
   .object({ status: z.string().max(40), audioUrl: z.string().url().nullish(), videoUrl: z.string().url().nullish(), error: z.unknown().optional() })
@@ -41,7 +50,9 @@ export type SpeakState = { state: "pending"; status: string } | { state: "done";
 export interface MaskyApi {
   listVoices(): Promise<MaskyVoice[]>;
   createAvatar(input: { displayName: string; imageUrl: string; personalityPrompt: string; voiceId: string }): Promise<{ avatarId: string }>;
-  primaryImageAssetId(avatarId: string): Promise<string | null>;
+  /** Diagnostic only, never on a critical path: the primary image's asset id, or the redacted shape of an unexpected response. */
+  primaryImageAssetId(avatarId: string): Promise<{ assetId: string | null; unexpectedShape: unknown | null }>;
+  listAvatars(): Promise<{ avatarId: string; displayName: string | null }[]>;
   startSpeech(avatarId: string, text: string, output: SpeakOutput): Promise<{ generationId: string; reused: boolean }>;
   speechStatus(generationId: string, output: SpeakOutput): Promise<SpeakState>;
 }
@@ -56,7 +67,7 @@ export class MaskyClient implements MaskyApi {
     if (!MASKY_KEY_FORMAT.test(apiKey)) throw new Error(`${MASKY_API_KEY_ENV} must be a Masky API key (mky_...).`);
   }
 
-  private async call<T>(schema: z.ZodType<T>, method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  private async raw(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     const res = await this.fetchImpl(`${MASKY_API_BASE}${path}`, {
       method,
       headers: { Authorization: `Bearer ${this.apiKey}`, Accept: "application/json", ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
@@ -67,8 +78,12 @@ export class MaskyClient implements MaskyApi {
       const message = typeof (json as { error?: unknown } | null)?.error === "string" ? scrub((json as { error: string }).error) : "";
       throw new MaskyError(res.status, message);
     }
-    const parsed = schema.safeParse(json);
-    if (!parsed.success) throw new MaskyError(res.status, `unexpected response shape for ${method} ${path.replace(/\/[^/]{12,}/g, "/<id>")}`);
+    return json;
+  }
+
+  private async call<T>(schema: z.ZodType<T>, method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    const parsed = schema.safeParse(await this.raw(method, path, body));
+    if (!parsed.success) throw new MaskyError(200, `unexpected response shape for ${method} ${path.replace(/\/[^/]{12,}/g, "/<id>")}`);
     return parsed.data;
   }
 
@@ -83,9 +98,15 @@ export class MaskyClient implements MaskyApi {
     return { avatarId };
   }
 
-  async primaryImageAssetId(avatarId: string): Promise<string | null> {
-    const r = await this.call(ImagesResponse, "GET", `/avatars/${encodeURIComponent(avatarId)}/images`);
-    return (r.images.find((i) => i.isPrimary) ?? r.images[0])?.assetId ?? null;
+  async primaryImageAssetId(avatarId: string): Promise<{ assetId: string | null; unexpectedShape: unknown | null }> {
+    const json = await this.raw("GET", `/avatars/${encodeURIComponent(avatarId)}/images`);
+    const r = ImagesResponse.safeParse(json);
+    if (!r.success) return { assetId: null, unexpectedShape: describeShape(json) };
+    return { assetId: (r.data.images.find((i) => i.isPrimary) ?? r.data.images[0])?.assetId ?? null, unexpectedShape: null };
+  }
+
+  async listAvatars(): Promise<{ avatarId: string; displayName: string | null }[]> {
+    return (await this.call(AvatarsResponse, "GET", "/avatars")).avatars.map((a) => ({ avatarId: a.avatarId, displayName: a.displayName ?? null }));
   }
 
   async startSpeech(avatarId: string, text: string, output: SpeakOutput): Promise<{ generationId: string; reused: boolean }> {
