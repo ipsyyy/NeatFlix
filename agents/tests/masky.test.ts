@@ -9,6 +9,7 @@ import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, speechByRole,
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
+  diagnoseSpeech,
   downloadProviderMedia,
   EMPTY_MANIFEST,
   estimateCredits,
@@ -610,5 +611,24 @@ describe("Masky speech recovery: job ids, tolerant status parsing, no duplicate 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("diagnoses one role's speech with exactly one identical request and one status request, recording the job first", async () => {
+    const x = deps();
+    const d = await diagnoseSpeech({ masky: x.masky, ledger: x.ledger }, { role: "content-curator", maskyAvatarId: "VDzafw3fD73I9SNZC6SY" });
+    assert.deepEqual(x.masky.calls, ["speak", "ledger", "status"], "no avatar, no download, no retry");
+    assert.deepEqual(x.masky.speech, [{ text: AGENT_IDENTITIES["content-curator"].spokenLine, output: "audio" }], "the exact committed line and output");
+    assert.deepEqual(d.result, { state: "pending", status: "pending" }, "normalized status, no media URL");
+    assert.equal(x.downloads.length, 0);
+    const done = deps();
+    done.masky.pendingPolls = 0;
+    const r = await diagnoseSpeech({ masky: done.masky, ledger: done.ledger }, { role: "content-curator", maskyAvatarId: "VDzafw3fD73I9SNZC6SY" });
+    assert.ok(r.result.state === "done" && !JSON.stringify(r).includes("https"), "a finished job is reported without its URL");
+    const odd = deps();
+    odd.masky.statusOverride = { state: "unrecognized", shape: { payload: { link: "string" } } };
+    const u = await diagnoseSpeech({ masky: odd.masky, ledger: odd.ledger }, { role: "content-curator", maskyAvatarId: "VDzafw3fD73I9SNZC6SY" });
+    assert.deepEqual(u.result, { state: "unrecognized", shape: { payload: { link: "string" } } });
+    assert.deepEqual(odd.ledger.events.map((e) => e.event), ["speech-requested", "speech-status-unrecognized"]);
+    assert.deepEqual(odd.masky.calls, ["speak", "ledger", "status", "ledger"]);
   });
 });

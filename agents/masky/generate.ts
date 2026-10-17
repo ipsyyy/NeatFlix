@@ -424,6 +424,47 @@ export async function downloadProviderMedia(
   throw new Error("Provider media redirected too many times.");
 }
 
+export type SpeechDiagnosis = {
+  generationId: string;
+  reused: boolean;
+  /** Normalized status only: never a media URL. */
+  result: { state: "pending" | "done" | "failed"; status: string } | { state: "unrecognized"; shape: unknown };
+};
+
+/**
+ * Diagnostic recovery for one role: re-sends the role's exact speech request
+ * (documented as deduplicated by Masky), records the job id in the ledger
+ * before anything else, and makes exactly one status request. Downloads and
+ * stores nothing; an unrecognized status is recorded only as redacted
+ * structure. Never retries.
+ */
+export async function diagnoseSpeech(
+  deps: { masky: MaskyApi; ledger: AvatarLedger; clock?: () => Date; log?: (line: string) => void },
+  input: { role: AgentRole; maskyAvatarId: string },
+): Promise<SpeechDiagnosis> {
+  const clock = deps.clock ?? (() => new Date());
+  const identity = AGENT_IDENTITIES[input.role];
+  const started = await deps.masky.startSpeech(input.maskyAvatarId, identity.spokenLine, identity.spokenOutput);
+  deps.log?.(`${input.role}: speech job ${started.generationId}${started.reused ? " (deduplicated by Masky: no second charge)" : " (NOT marked as deduplicated)"}`);
+  await deps.ledger.append({
+    event: "speech-requested",
+    role: input.role,
+    maskyAvatarId: input.maskyAvatarId,
+    maskyGenerationId: started.generationId,
+    output: identity.spokenOutput,
+    textSha256: createHash("sha256").update(identity.spokenLine).digest("hex"),
+    reused: started.reused,
+    source: "POST /avatars/{id}/speak (diagnostic recovery)",
+    at: clock().toISOString(),
+  });
+  const s = await deps.masky.speechStatus(started.generationId, identity.spokenOutput);
+  if (s.state === "unrecognized") {
+    await deps.ledger.append({ event: "speech-status-unrecognized", role: input.role, maskyGenerationId: started.generationId, shape: s.shape, at: clock().toISOString() });
+    return { generationId: started.generationId, reused: started.reused, result: { state: "unrecognized", shape: s.shape } };
+  }
+  return { generationId: started.generationId, reused: started.reused, result: { state: s.state, status: s.status } };
+}
+
 /** Server-side probe of downloaded media with local ffprobe (no network). */
 export async function ffprobeMedia(bytes: Uint8Array): Promise<MediaProbe> {
   const dir = await mkdtemp(join(tmpdir(), "nf-masky-"));

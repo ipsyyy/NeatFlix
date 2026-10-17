@@ -28,6 +28,7 @@
  * Run (generate):  npm run agents:masky-identities -- --generate=nativeframe-agent-identities-v1 [--voices=<role>=<voiceId>,...]
  * Run (adopt):     npm run agents:masky-identities -- --adopt=<role> --voice-id=<voiceId> --voice-name="<name>"
  * Run (voices):    npm run agents:masky-identities -- --list-voices   (one read-only GET /voices)
+ * Run (diagnose):  npm run agents:masky-identities -- --diagnose-speech=<role>   (one identical speech request + one status request)
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -36,7 +37,7 @@ import sharp from "sharp";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT, safeVoiceLines } from "@/agents/masky/client";
-import { avatarDisplayName, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type RecordedSpeech, type ReusedAvatar } from "@/agents/masky/generate";
+import { avatarDisplayName, diagnoseSpeech, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type RecordedSpeech, type ReusedAvatar } from "@/agents/masky/generate";
 import { AGENT_IDENTITIES, estimateSpeechSeconds, identitySpecSha256, portraitSvg, validateIdentities } from "@/agents/masky/identities";
 import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, speechByRole } from "@/agents/masky/ledger";
 import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
@@ -106,6 +107,22 @@ async function main(): Promise<number> {
   out(`Recorded identities (live manifest): ${recorded.length === 0 ? "none" : recorded.join(", ")}`);
   out(`Recorded avatars (ledger): ${Object.keys(avatars.value).length === 0 ? "none" : Object.entries(avatars.value).map(([r, e]) => `${r}=${e!.maskyAvatarId} (${e!.event}, voice ${e!.voice.name})`).join("; ")}`);
   out(`Recorded speech jobs (ledger): ${Object.keys(speech).length === 0 ? "none" : Object.entries(speech).map(([r, e]) => `${r}=${e!.maskyGenerationId}${e!.reused ? " (deduplicated)" : ""}`).join("; ")}\n`);
+
+  // Diagnostic recovery (only with --diagnose-speech=<role>): one identical speech request and one status request.
+  const diagnose = process.argv.find((a) => a.startsWith("--diagnose-speech="))?.slice("--diagnose-speech=".length);
+  if (diagnose !== undefined) {
+    if (process.argv.slice(2).length !== 1 || !(AGENT_ROLES as readonly string[]).includes(diagnose)) return (out("Use --diagnose-speech=<role> alone. Nothing was done."), 1);
+    const role = diagnose as AgentRole;
+    const avatar = avatars.value[role];
+    if (!avatar) return (out(`${role} has no recorded avatar. Nothing was done.`), 1);
+    if (speech[role]) return (out(`${role} already has a recorded speech job (${speech[role]!.maskyGenerationId}); nothing is re-sent. Nothing was done.`), 1);
+    const masky = createMaskyClientFromEnv(process.env);
+    if (!masky) return (out("Masky is not configured. Nothing was done."), 1);
+    const d = await diagnoseSpeech({ masky, ledger, log: (l) => out(`  ${l}`) }, { role, maskyAvatarId: avatar.maskyAvatarId });
+    out(`Job ${d.generationId}: reused=${d.reused}; ${d.result.state === "unrecognized" ? `status response UNRECOGNIZED; redacted structure recorded: ${JSON.stringify(d.result.shape)}` : `normalized status: ${d.result.state} ("${d.result.status}")`}`);
+    out("Diagnostic only: no media downloaded or stored, no avatar created, no other agent processed.");
+    return 0;
+  }
 
   const adopt = process.argv.find((a) => a.startsWith("--adopt="))?.slice("--adopt=".length);
   if (adopt !== undefined) {
