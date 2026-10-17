@@ -26,15 +26,48 @@ export const AGENT_MEDIA_PREFIX = "storage://nf-media/agents/";
 /** Masky's published rates (credits; 1 credit = $1): one-shot speech audio and talking-head video, per second of speech. */
 export const MASKY_RATES = Object.freeze({ audioPerSecond: 0.0015, videoPerSecond: 0.0265 });
 export const MAX_SPOKEN_BYTES = 25 * 1024 * 1024;
+/** Spoken media types the private bucket accepts, and their file extensions. */
 const SPOKEN_TYPES: Readonly<Record<string, string>> = Object.freeze({
   "audio/mpeg": "mp3",
-  "audio/mp3": "mp3",
   "audio/wav": "wav",
-  "audio/x-wav": "wav",
-  "audio/ogg": "ogg",
   "audio/mp4": "m4a",
   "video/mp4": "mp4",
 });
+/** Non-standard aliases providers send, mapped to the type that is stored. */
+const TYPE_ALIASES: Readonly<Record<string, string>> = Object.freeze({ "audio/mp3": "audio/mpeg", "audio/x-wav": "audio/wav", "audio/wave": "audio/wav" });
+
+/** The private media bucket and every type a Masky run stores in it (portraits, audio, talking-head video). */
+export const MEDIA_BUCKET = "nf-media";
+export const REQUIRED_MEDIA_TYPES: readonly string[] = Object.freeze(["video/mp4", "image/png", "image/jpeg", "audio/mpeg", "audio/mp4", "audio/wav"]);
+
+/**
+ * Why the media bucket is not ready for a Masky run: it must be nf-media,
+ * private, and explicitly accept every required type (an unrestricted bucket
+ * is not accepted: the list must be explicit).
+ */
+export function checkMediaBucket(config: unknown): string[] {
+  if (!isObj(config)) return ["The media bucket configuration could not be read."];
+  const e: string[] = [];
+  const id = config.id ?? config.name;
+  if (id !== MEDIA_BUCKET) e.push(`The bucket is "${String(id)}", not ${MEDIA_BUCKET}.`);
+  if (config.public !== false) e.push(`The ${MEDIA_BUCKET} bucket must be private.`);
+  const allowed = config.allowed_mime_types;
+  if (!Array.isArray(allowed)) e.push(`The ${MEDIA_BUCKET} bucket has no explicit list of allowed MIME types.`);
+  else {
+    const missing = REQUIRED_MEDIA_TYPES.filter((t) => !allowed.includes(t));
+    if (missing.length > 0) e.push(`The ${MEDIA_BUCKET} bucket does not allow: ${missing.join(", ")}.`);
+  }
+  return e;
+}
+
+/** Reads the bucket configuration and checks it; any read failure is a readiness failure. */
+export async function mediaBucketReadiness(storage: { bucketConfig(bucket: string): Promise<unknown> }): Promise<string[]> {
+  try {
+    return checkMediaBucket(await storage.bucketConfig(MEDIA_BUCKET));
+  } catch (error) {
+    return [`The ${MEDIA_BUCKET} bucket configuration could not be read: ${error instanceof Error ? error.message : "unknown error"}`];
+  }
+}
 
 export type IdentityManifestEntry = {
   role: AgentRole;
@@ -180,6 +213,8 @@ export type MediaProbe = { durationSeconds: number; hasAudio: boolean; hasVideo:
 
 export type GenerationDeps = {
   masky: MaskyApi;
+  /** Private-storage readiness, checked before any Masky call (returns why storage is not ready). */
+  checkStorage?: () => Promise<string[]>;
   /** Append-only avatar record, written immediately after each avatar is created. */
   ledger: AvatarLedger;
   storage: PortraitHandoffStorage;
@@ -228,6 +263,8 @@ export async function generateIdentities(
 
   const specErrors = validateIdentities();
   if (specErrors.length > 0) return result({ role: "content-curator", stage: "identities", error: specErrors.join(" ") });
+  const storageErrors = deps.checkStorage ? await deps.checkStorage() : [];
+  if (storageErrors.length > 0) return result({ role: "content-curator", stage: "storage", error: storageErrors.join(" ") });
   // Masky documents no avatar deletion, so a recorded identity is never recreated by this run.
   if (options.existing && Object.keys(options.existing.entries).length > 0) {
     return result({ role: Object.keys(options.existing.entries)[0] as AgentRole, stage: "existing", error: "Identities are already recorded; this run never creates a second avatar." });
@@ -320,7 +357,8 @@ export async function generateIdentities(
       stage = "download";
       const media = await deps.download(mediaUrl);
       mediaUrl = null;
-      const mime = media.contentType.split(";")[0].trim().toLowerCase();
+      const declared = media.contentType.split(";")[0].trim().toLowerCase();
+      const mime = TYPE_ALIASES[declared] ?? declared;
       const ext = SPOKEN_TYPES[mime];
       if (!ext || (identity.spokenOutput === "video") !== (mime === "video/mp4")) throw new Error(`Unexpected spoken media type ${mime}.`);
       if (media.bytes.length === 0 || media.bytes.length > MAX_SPOKEN_BYTES) throw new Error("Spoken media is empty or too large.");

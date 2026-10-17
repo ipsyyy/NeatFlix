@@ -64,6 +64,14 @@ export class SupabasePrivateStorage implements PortraitHandoffStorage {
     throw new Error(`Private storage download failed with HTTP ${res.status}.`);
   }
 
+  /** A bucket's configuration (read-only): whether it is public and which MIME types it accepts. */
+  async bucketConfig(bucket: string): Promise<unknown> {
+    if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(bucket)) throw new Error("Invalid bucket name.");
+    const res = await this.fetchImpl(`${this.base}/bucket/${bucket}`, { headers: { apikey: this.secretKey } });
+    if (!res.ok) throw new Error(`Bucket configuration read failed with HTTP ${res.status}.`);
+    return res.json();
+  }
+
   /** A 5-minute signed read URL, only for an agent portrait (see the module comment). Never log or store it. */
   async createPortraitHandoffUrl(storageRef: string): Promise<string> {
     if (!isPortraitHandoffRef(storageRef)) throw new Error("Only an agent portrait may be handed off.");

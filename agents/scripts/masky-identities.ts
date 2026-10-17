@@ -37,7 +37,7 @@ import sharp from "sharp";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
 import { AGENT_ROLES, type AgentRole } from "@/agents/config/roles";
 import { createMaskyClientFromEnv, MASKY_API_KEY_ENV, MASKY_KEY_FORMAT, safeVoiceLines } from "@/agents/masky/client";
-import { avatarDisplayName, diagnoseSpeech, downloadProviderMedia, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type RecordedSpeech, type ReusedAvatar } from "@/agents/masky/generate";
+import { avatarDisplayName, diagnoseSpeech, downloadProviderMedia, mediaBucketReadiness, REQUIRED_MEDIA_TYPES, EMPTY_MANIFEST, estimateCredits, ffprobeMedia, generateIdentities, validateManifest, type IdentityManifest, type RecordedSpeech, type ReusedAvatar } from "@/agents/masky/generate";
 import { AGENT_IDENTITIES, estimateSpeechSeconds, identitySpecSha256, portraitSvg, validateIdentities } from "@/agents/masky/identities";
 import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, speechByRole } from "@/agents/masky/ledger";
 import { createPrivateStorageFromEnv } from "@/agents/persistence/private-storage";
@@ -179,17 +179,22 @@ async function main(): Promise<number> {
     }
   }
 
+  // Private storage must accept every type the run stores, checked before any Masky call (one read-only request).
+  const storageForCheck = createPrivateStorageFromEnv(process.env);
+  const storageErrors = storageForCheck ? await mediaBucketReadiness(storageForCheck) : ["Supabase private storage is not configured."];
+  out(`\nPrivate storage readiness (${REQUIRED_MEDIA_TYPES.join(", ")}): ${storageErrors.length === 0 ? "ready" : `NOT READY: ${storageErrors.join(" ")}`}`);
   if (generate === undefined) {
-    out(`\nPreflight only: no network request was made. To generate: --generate=${GENERATE_TOKEN}`);
-    return 0;
+    out(`Preflight only: one read-only Supabase bucket-configuration request; no Masky request was made. To generate: --generate=${GENERATE_TOKEN}`);
+    return storageErrors.length === 0 ? 0 : 1;
   }
+  if (storageErrors.length > 0) return (out("Private storage is not ready. Nothing was sent to Masky."), 1);
   if (recorded.length > 0) return (out("All identities are already recorded; this run never creates a second batch. Nothing was done."), 1);
   const masky = createMaskyClientFromEnv(process.env);
   const storage = createPrivateStorageFromEnv(process.env);
   if (!masky || !storage) return (out("Masky or Supabase is not configured. Nothing was done."), 1);
 
   const result = await generateIdentities(
-    { masky, ledger, storage, renderPng, download: (url) => downloadProviderMedia(url), probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
+    { masky, ledger, storage, checkStorage: () => mediaBucketReadiness(storage), renderPng, download: (url) => downloadProviderMedia(url), probe: ffprobeMedia, pollIntervalMs: POLL_MS, maxPolls: MAX_POLLS, log: (l) => out(`  ${l}`) },
     { existing, voiceOverrides, reuse, reuseSpeech },
   );
   if (result.voices) out(`\nVoices: ${AGENT_ROLES.map((r) => `${r}=${result.voices![r].name} (${result.voices![r].id})`).join("; ")}`);

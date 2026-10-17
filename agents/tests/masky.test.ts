@@ -9,7 +9,10 @@ import { avatarsByRole, FileAvatarLedger, findAvatarByDisplayName, speechByRole,
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
+  checkMediaBucket,
   diagnoseSpeech,
+  mediaBucketReadiness,
+  REQUIRED_MEDIA_TYPES,
   downloadProviderMedia,
   EMPTY_MANIFEST,
   estimateCredits,
@@ -630,5 +633,66 @@ describe("Masky speech recovery: job ids, tolerant status parsing, no duplicate 
     assert.deepEqual(u.result, { state: "unrecognized", shape: { payload: { link: "string" } } });
     assert.deepEqual(odd.ledger.events.map((e) => e.event), ["speech-requested", "speech-status-unrecognized"]);
     assert.deepEqual(odd.masky.calls, ["speak", "ledger", "status", "ledger"]);
+  });
+});
+
+describe("private storage readiness for Masky media", () => {
+  const ready = { id: "nf-media", name: "nf-media", public: false, allowed_mime_types: ["video/mp4", "image/png", "image/jpeg", "audio/mpeg", "audio/mp4", "audio/wav"], file_size_limit: null };
+
+  it("accepts the private nf-media bucket only when it explicitly allows every required type", () => {
+    assert.deepEqual(checkMediaBucket(ready), []);
+    assert.deepEqual(checkMediaBucket({ ...ready, allowed_mime_types: [...ready.allowed_mime_types, "text/plain"] }), [], "extra types do not block readiness");
+    const missing = checkMediaBucket({ ...ready, allowed_mime_types: ["video/mp4", "image/png", "image/jpeg"] });
+    assert.ok(missing.some((e) => /does not allow: audio\/mpeg, audio\/mp4, audio\/wav/.test(e)), "missing audio types");
+    assert.ok(checkMediaBucket({ ...ready, id: "other", name: "other" }).some((e) => /not nf-media/.test(e)), "wrong bucket");
+    assert.ok(checkMediaBucket({ ...ready, public: true }).some((e) => /must be private/.test(e)), "public bucket");
+    assert.ok(checkMediaBucket({ ...ready, allowed_mime_types: null }).some((e) => /no explicit list/.test(e)), "unrestricted is not explicit");
+    assert.ok(checkMediaBucket("not json").length > 0, "malformed");
+    assert.deepEqual(REQUIRED_MEDIA_TYPES, ready.allowed_mime_types);
+  });
+
+  it("treats a failed configuration read as not ready", async () => {
+    assert.deepEqual(await mediaBucketReadiness({ bucketConfig: async () => ready }), []);
+    const thrown = await mediaBucketReadiness({ bucketConfig: async () => Promise.reject(new Error("HTTP 500")) });
+    assert.ok(thrown.length === 1 && /could not be read/.test(thrown[0]));
+    const fetchImpl = (async () => new Response("{}", { status: 500 })) as unknown as typeof fetch;
+    const store = new SupabasePrivateStorage("https://project.supabase.co", "sb_secret_TEST0000notarealkey0000", fetchImpl);
+    assert.ok((await mediaBucketReadiness(store)).some((e) => /HTTP 500/.test(e)));
+    const okFetch = (async (url: string) => (assert.equal(url, "https://project.supabase.co/storage/v1/bucket/nf-media"), new Response(JSON.stringify(ready), { status: 200 }))) as unknown as typeof fetch;
+    assert.deepEqual(await mediaBucketReadiness(new SupabasePrivateStorage("https://project.supabase.co", "sb_secret_TEST0000notarealkey0000", okFetch)), []);
+    await assert.rejects(store.bucketConfig("../x"), /Invalid bucket/);
+  });
+
+  it("stops a run before any Masky call when storage is not ready", async () => {
+    const x = deps({ checkStorage: async () => ["The nf-media bucket does not allow: audio/mpeg."] });
+    const r = await generateIdentities(x.d);
+    assert.deepEqual([r.failed?.stage, r.completed.length], ["storage", 0]);
+    assert.deepEqual(x.masky.calls, [], "no Masky request at all");
+    assert.deepEqual([...x.storage.objects.keys()], [], "nothing stored");
+    const ok = deps({ checkStorage: async () => [] });
+    assert.equal((await generateIdentities(ok.d)).failed, null);
+  });
+
+  it("stores audio only under a type the bucket accepts", async () => {
+    const alias = deps({ download: async () => ({ bytes: new Uint8Array([1, 2]), contentType: "audio/mp3; charset=binary" }) });
+    alias.masky.speech.length = 0;
+    const r = await generateIdentities({ ...alias.d, probe: async () => ({ durationSeconds: 5, hasAudio: true, hasVideo: false, width: null, height: null }) });
+    assert.equal(r.manifest.entries["content-curator"]?.spoken.mimeType, "audio/mpeg", "audio/mp3 is stored as audio/mpeg");
+    const ogg = deps({ download: async () => ({ bytes: new Uint8Array([1, 2]), contentType: "audio/ogg" }) });
+    assert.equal((await generateIdentities(ogg.d)).failed?.stage, "download", "a type the bucket refuses is never uploaded");
+  });
+
+  it("keeps the bucket migration narrow and idempotent", () => {
+    const sql = readFileSync(join(process.cwd(), "supabase/migrations/20261017100000_nf_media_allowed_mime_types.sql"), "utf8");
+    const list = "array['video/mp4', 'image/png', 'image/jpeg', 'audio/mpeg', 'audio/mp4', 'audio/wav']::text[]";
+    assert.equal(sql.split(list).length - 1, 2, "sets, and compares against, exactly the required list");
+    assert.match(sql, /where id = 'nf-media'\s+and public = false\s+and allowed_mime_types is distinct from/);
+    assert.match(sql, /raise exception 'bucket nf-media must remain private'/);
+    assert.match(sql, /raise exception 'bucket nf-media does not exist'/);
+    const setClause = /\bset\b([\s\S]*?)\bwhere\b/i.exec(sql)?.[1] ?? "";
+    assert.ok(/allowed_mime_types\s*=/.test(setClause) && !/\bpublic\b|file_size_limit|\bname\b/.test(setClause), "only allowed_mime_types is assigned");
+    for (const forbidden of [/\binsert\b/i, /\bdelete\b/i, /\bdrop\b/i, /\bpolicy\b/i, /file_size_limit\s*=/i, /storage\.objects/i]) {
+      assert.ok(!forbidden.test(sql), `the migration never matches ${forbidden}`);
+    }
   });
 });
