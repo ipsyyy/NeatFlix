@@ -434,7 +434,7 @@ describe("Masky avatar recovery: no unrecorded avatar", () => {
     assert.equal(clash.failed?.stage, "voices", "a reused avatar keeps its voice");
   });
 
-  it("gives the Release Governor the most authoritative voice and the Campaign Matcher an analytical one, all distinct", () => {
+  it("gives the Release Governor the most authoritative voice and the Campaign Matcher an analytical one, all distinct", async () => {
     const real: MaskyVoice[] = [
       { id: "a", name: "Warm Female Assistant Voice", source: "preset" },
       { id: "b", name: "Soft Male Conversationalist", source: "preset" },
@@ -451,6 +451,15 @@ describe("Masky avatar recovery: no unrecorded avatar", () => {
     assert.equal(r.value["campaign-matcher"].name, "Analytical Professional Female");
     assert.ok(!Object.values(r.value).some((v) => /meditation/i.test(v.name)), "unsuitable styles are avoided");
     assert.equal(new Set(Object.values(r.value).map((v) => v.id)).size, 5);
+    // Required terms: without a matching voice the role gets none, and the batch stops before any avatar.
+    const noAuthority = resolveVoices(real.filter((v) => v.id !== "f"), { "content-curator": "a" });
+    assert.ok(!noAuthority.ok && noAuthority.errors.some((e) => /release-governor.*authoritative, commanding, formal/.test(e)));
+    const noAnalyst = resolveVoices(real.filter((v) => v.id !== "g" && v.id !== "h"), { "content-curator": "a" });
+    assert.ok(!noAnalyst.ok && noAnalyst.errors.some((e) => /campaign-matcher.*analytical, confident, professional/.test(e)));
+    const few = deps();
+    few.masky.voices = VOICES.filter((v) => v.id !== "v-brit");
+    const stopped = await generateIdentities(few.d);
+    assert.deepEqual([stopped.failed?.stage, few.masky.avatarInputs.length], ["voices", 0], "no avatar when the Governor cannot get an authoritative voice");
     // The Governor chooses first: an "authoritative" voice goes to it even if another role could match it.
     const contested = resolveVoices([...real.filter((v) => v.id !== "g"), { id: "z", name: "Authoritative Analytical Voice", source: "preset" }]);
     assert.ok(contested.ok && contested.value["release-governor"].id === "f");

@@ -28,6 +28,8 @@ export type AgentIdentity = {
   personality: string;
   /** Voice names to prefer from Masky's preset list, in order (case-insensitive substring match). */
   voiceHints: readonly string[];
+  /** When set, the chosen voice's name must contain one of these terms, or no voice is chosen (fail closed). */
+  requiredVoiceTerms?: readonly string[];
   /** The one short spoken result. Spoken verbatim (textMode "literal"). */
   spokenLine: string;
   /** "audio" for most agents; the Release Governor's result is a talking-head video. */
@@ -66,6 +68,7 @@ export const AGENT_IDENTITIES: Readonly<Record<AgentRole, AgentIdentity>> = Obje
     title: "Campaign Matcher",
     personality: "A pragmatic media strategist. Direct and numbers-minded, she names who is eligible and who is excluded before talking about fit.",
     voiceHints: ["analytical", "confident", "professional", "clear", "female"],
+    requiredVoiceTerms: ["analytical", "confident", "professional"],
     spokenLine: "Daybreak Cold Brew fits the café scene. Only adult, ad-supported viewers qualify; premium and under-18 audiences are excluded.",
     spokenOutput: "audio",
     prominence: "standard",
@@ -88,6 +91,7 @@ export const AGENT_IDENTITIES: Readonly<Record<AgentRole, AgentIdentity>> = Obje
     title: "Release Governor",
     personality: "An impartial, authoritative release governor. Measured and concise; she states what passed, what is uncertain, and that release decisions belong to people.",
     voiceHints: ["authoritative", "commanding", "formal", "british", "confident", "deep"],
+    requiredVoiceTerms: ["authoritative", "commanding", "formal"],
     spokenLine: "Plan version three passed every check, and the human owner approved it. Release decisions stay with people, not agents.",
     spokenOutput: "video",
     prominence: "primary",

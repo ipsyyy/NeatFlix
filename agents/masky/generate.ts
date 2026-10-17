@@ -70,7 +70,8 @@ const VOICE_PRIORITY: readonly AgentRole[] = ["release-governor", "content-curat
  * Chooses five distinct voices. Fixed voices (overrides, and the voices of
  * reused avatars) come first. Then, in priority order, each role takes the
  * unused preset matching its earliest voice hint (avoiding unsuitable styles),
- * otherwise the next unused suitable preset by id. Fails closed if five
+ * otherwise the next unused suitable preset by id. A role with required voice
+ * terms only ever takes a voice whose name contains one. Fails closed if five
  * distinct voices are not available.
  */
 export function resolveVoices(voices: readonly MaskyVoice[], fixed: Partial<Record<AgentRole, string>> = {}): { ok: true; value: Record<AgentRole, MaskyVoice> } | { ok: false; errors: string[] } {
@@ -97,10 +98,11 @@ export function resolveVoices(voices: readonly MaskyVoice[], fixed: Partial<Reco
       const i = hints.findIndex((h) => v.name.toLowerCase().includes(h));
       return i === -1 ? Number.POSITIVE_INFINITY : i;
     };
-    const candidates = presets.filter((v) => !used.has(v.id));
+    const required = AGENT_IDENTITIES[role].requiredVoiceTerms?.map((t) => t.toLowerCase());
+    const candidates = presets.filter((v) => !used.has(v.id) && (!required || required.some((t) => v.name.toLowerCase().includes(t))));
     const best = [...candidates].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id))[0];
     if (!best) {
-      errors.push(`${role}: no distinct voice is available.`);
+      errors.push(`${role}: no distinct voice is available${required ? ` whose name includes ${required.join(", ")}` : ""}.`);
       continue;
     }
     chosen[role] = best;
