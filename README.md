@@ -1,4 +1,4 @@
-# NativeFrame
+# NeatFlix
 
 NativeFrame is an internal AI platform that helps an ad-supported streaming team identify, prototype, evaluate, and safely test contextual product-placement opportunities inside rights-cleared shows.
 
