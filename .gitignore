@@ -45,3 +45,6 @@ next-env.d.ts
 *.mp4
 *.mov
 *.webm
+
+# local demo snapshot (verified private media; never commit)
+/.demo/

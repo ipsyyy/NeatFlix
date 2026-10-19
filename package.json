@@ -26,7 +26,11 @@
     "agents:masky-identities": "tsx agents/scripts/masky-identities.ts",
     "langsmith:trace-case": "tsx agents/scripts/langsmith-trace-case.ts",
     "security:audit": "npm audit --omit=dev --audit-level=high",
-    "security:snyk": "snyk test --all-projects --severity-threshold=high && snyk code test --severity-threshold=high"
+    "security:snyk": "snyk test --all-projects --severity-threshold=high && snyk code test --severity-threshold=high",
+    "demo:snapshot": "tsx agents/scripts/demo-snapshot.ts",
+    "demo:verify": "tsx agents/scripts/demo-verify.ts",
+    "demo": "npm run demo:snapshot && next build && next start --port 3000",
+    "test:e2e": "tsx --test e2e/demo.e2e.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
@@ -49,6 +53,7 @@
     "esbuild": "0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
+    "playwright-core": "1.63.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"

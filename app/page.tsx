@@ -10,7 +10,7 @@ export default function CataloguePage() {
   return (
     <TitleRecordProvider titles={catalogue}>
       <main id="main" tabIndex={-1} className="flex-1 outline-none">
-        <h1 className="sr-only">NativeFrame catalogue</h1>
+        <h1 className="sr-only">NeatFlix catalogue</h1>
         <FeaturedTitle title={featured} />
         <EligibilitySummary titles={catalogue} />
         <CatalogueGrid titles={catalogue} />

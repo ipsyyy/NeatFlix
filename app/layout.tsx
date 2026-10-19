@@ -12,7 +12,7 @@ const archivo = Archivo({
 });
 
 export const metadata: Metadata = {
-  title: "NativeFrame",
+  title: "NeatFlix",
   description:
     "Identify, prototype, evaluate, and safely test contextual product placements in rights-cleared shows.",
 };

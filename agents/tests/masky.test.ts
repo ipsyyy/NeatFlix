@@ -345,7 +345,8 @@ describe("Masky privacy boundaries", () => {
       existsSync(dir) ? readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : [join(dir, f)])) : [];
     for (const file of ["app", "components", "lib", "data"].flatMap(files).filter((f) => /\.(tsx?|jsx?|json)$/.test(f))) {
       const src = readFileSync(file, "utf8");
-      assert.ok(!/masky|MASKY_API_KEY|@\/agents/i.test(src), `${file} must not reference Masky or server agent code`);
+      // The demo may name Masky on screen; Masky's API, key, client code, and any agent code stay server-only.
+      assert.ok(!/masky\.ai|MASKY_API_KEY|mky_|@\/agents|agents\/masky/i.test(src), `${file} must not reference the Masky API or server agent code`);
     }
     assert.match(readFileSync("eslint.config.mjs", "utf8"), /"@\/agents\/\*"/);
     const bundle = ".next/static";

@@ -1,0 +1,13 @@
+# Used by `vercel` CLI uploads instead of .gitignore, so .demo/ (the verified
+# demo snapshot + media) IS uploaded. Everything secret stays out.
+.env
+.env.*
+!.env.example
+.git
+.next
+node_modules
+.vercel
+*.tsbuildinfo
+e2e
+agents/tests
+supabase

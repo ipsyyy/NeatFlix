@@ -5,6 +5,7 @@ const sections = [
   { href: "/#featured", label: "Featured" },
   { href: "/#eligibility", label: "Eligibility" },
   { href: "/#titles", label: "All titles" },
+  { href: "/demo", label: "Demo" },
 ];
 
 export function SiteHeader() {
@@ -54,7 +55,7 @@ function Wordmark() {
         />
         <circle cx="14.5" cy="14" r="2.5" className="fill-accent" />
       </svg>
-      <span className="type-wide text-[1.0625rem] font-bold tracking-tight">NativeFrame</span>
+      <span className="type-wide text-[1.0625rem] font-bold tracking-tight">NeatFlix</span>
     </>
   );
 }

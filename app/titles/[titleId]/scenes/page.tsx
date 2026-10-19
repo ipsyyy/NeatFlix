@@ -22,7 +22,7 @@ export async function generateMetadata({
 }: PageProps<"/titles/[titleId]/scenes">): Promise<Metadata> {
   const { titleId } = await params;
   const title = findReviewableTitle(titleId);
-  return { title: title ? `Scene selection: ${title.title} | NativeFrame` : "NativeFrame" };
+  return { title: title ? `Scene selection: ${title.title} | NeatFlix` : "NeatFlix" };
 }
 
 export default async function SceneWorkspacePage({

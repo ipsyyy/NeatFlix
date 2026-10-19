@@ -37,7 +37,7 @@ export async function generateMetadata({
 }: PageProps<"/titles/[titleId]/scenes/[sceneId]/campaign">): Promise<Metadata> {
   const { titleId, sceneId } = await params;
   const ctx = resolveCampaignContext(titleId, sceneId);
-  return { title: ctx ? `Campaign matching: ${ctx.title.title} | NativeFrame` : "NativeFrame" };
+  return { title: ctx ? `Campaign matching: ${ctx.title.title} | NeatFlix` : "NeatFlix" };
 }
 
 export default async function CampaignMatchingPage({
