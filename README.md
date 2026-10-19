@@ -4,7 +4,7 @@ NeatFlix is an internal AI platform that helps an ad-supported streaming team id
 
 ## Product source of truth
 
-[`PRODUCT_SOURCE_OF_TRUTH.md`](./PRODUCT_SOURCE_OF_TRUTH.md) is the controlling specification for NativeFrame. It governs all product, scope, architecture, and implementation decisions. Any change that would conflict with it must be proposed and agreed by updating that document first, before implementation.
+[`PRODUCT_SOURCE_OF_TRUTH.md`](./PRODUCT_SOURCE_OF_TRUTH.md) is the controlling specification for NeatFlix. It governs all product, scope, architecture, and implementation decisions. Any change that would conflict with it must be proposed and agreed by updating that document first, before implementation.
 
 ## Reference material
 
