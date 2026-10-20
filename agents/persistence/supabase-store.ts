@@ -184,8 +184,19 @@ export class SupabaseWorkflowStore implements WorkflowStore {
     await this.insert("media_visual_reviews", row);
   }
 
-  getVisualReview(assetId: string): Promise<VisualReviewRow | null> {
-    return this.one<VisualReviewRow>("media_visual_reviews", "asset_id", assetId);
+  async getVisualReview(assetId: string): Promise<VisualReviewRow | null> {
+    const row = await this.one<VisualReviewRow>("media_visual_reviews", "asset_id", assetId);
+    return row ? { ...row, limitations: Array.isArray(row.limitations) ? row.limitations : [] } : null;
+  }
+
+  /** Whether media_visual_reviews has its limitations column (20261019000000_full_scene_video_and_review_limitations.sql). Read-only: selects no rows. */
+  async reviewLimitationsAvailable(): Promise<boolean> {
+    try {
+      await this.request("media_visual_reviews", { method: "GET", query: "select=limitations&limit=0" });
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

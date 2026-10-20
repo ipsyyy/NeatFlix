@@ -39,6 +39,7 @@ const MIME_FOR_KIND: Record<MediaKind, RegExp> = {
   "source-frame": /^image\/[a-z0-9.+-]+$/,
   "edited-still": /^image\/[a-z0-9.+-]+$/,
   "generated-preview": /^video\/[a-z0-9.+-]+$/,
+  "full-scene-video": /^video\/mp4$/,
 };
 
 type Result<T> = ValidationResult<T>;
@@ -92,12 +93,14 @@ export function validateMediaRow(row: unknown): string[] {
   if (row.cost_usd != null && !(typeof row.cost_usd === "number" && row.cost_usd >= 0)) e.push("cost_usd must be non-negative.");
   if (row.generated_at != null && !isoUtc(row.generated_at)) e.push("generated_at must be a timestamp.");
 
-  if (kind === "generated-preview") {
+  if (kind === "generated-preview" || kind === "full-scene-video") {
     const prov = isObj(row.provenance) ? row.provenance : {};
-    if (!str(row.plan_id, 200)) e.push("A generated preview must name its plan_id.");
-    if (!str(row.generator, 120) || !str(row.model, 120)) e.push("A generated preview needs generator and model.");
-    if (!isoUtc(row.generated_at)) e.push("A generated preview needs generated_at.");
-    if (row.latency_ms == null || row.cost_usd == null) e.push("A generated preview needs latency_ms and cost_usd.");
+    const what = kind === "generated-preview" ? "A generated preview" : "A full-scene video";
+    if (!str(row.plan_id, 200)) e.push(`${what} must name its plan_id.`);
+    if (!str(row.generator, 120) || !str(row.model, 120)) e.push(`${what} needs generator and model.`);
+    if (!isoUtc(row.generated_at)) e.push(`${what} needs generated_at.`);
+    if (row.latency_ms == null || row.cost_usd == null) e.push(`${what} needs latency_ms and cost_usd.`);
+    if (kind === "full-scene-video" && row.duration_seconds == null) e.push("A full-scene video needs duration_seconds.");
     if (prov.inputPlanId !== row.plan_id) e.push("provenance.inputPlanId must equal plan_id.");
     if (prov.generator !== row.generator) e.push("provenance.generator must equal generator.");
     if (isoUtc(prov.generatedAt) === null || isoUtc(prov.generatedAt) !== isoUtc(row.generated_at)) e.push("provenance.generatedAt must equal generated_at.");

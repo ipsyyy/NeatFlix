@@ -45,6 +45,8 @@ next-env.d.ts
 *.mp4
 *.mov
 *.webm
+# except the public demo clips the deployed homepage plays (never .demo/ or provider output)
+!/public/demo-videos/*.mp4
 
 # local demo snapshot (verified private media; never commit)
 /.demo/

@@ -1,4 +1,5 @@
-import { Lock } from "lucide-react";
+import { ArrowRight, Lock } from "lucide-react";
+import Link from "next/link";
 import { matchDecisionLabel, type CampaignMatch } from "@/lib/campaigns/matching";
 import type { Campaign } from "@/lib/campaigns/types";
 import { formatTimecode } from "@/lib/scenes/format";
@@ -9,12 +10,15 @@ export function CampaignSummary({
   scene,
   campaign,
   match,
+  previewHref,
   className = "",
 }: {
   caseId: string;
   scene: SceneCandidate;
   campaign: Campaign;
   match: CampaignMatch;
+  /** The recorded case's placement preview; without one the step stays locked. */
+  previewHref?: string;
   className?: string;
 }) {
   const { minAge, maxAge } = campaign.audience;
@@ -42,18 +46,36 @@ export function CampaignSummary({
       </dl>
 
       <div className="mt-4 border-t border-line pt-4">
-        <button
-          type="button"
-          disabled
-          aria-describedby="placement-preview-note"
-          className="inline-flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-full border border-line-strong bg-white/[0.04] px-5 text-[0.9375rem] font-semibold text-muted"
-        >
-          <Lock aria-hidden="true" className="size-4" />
-          Continue to placement preview
-        </button>
-        <p id="placement-preview-note" className="mt-2 text-center text-xs text-muted">
-          Not built yet. Placement preview comes in a later build.
-        </p>
+        {previewHref ? (
+          <>
+            <Link
+              href={previewHref}
+              aria-describedby="placement-preview-note"
+              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-full bg-accent px-5 text-[0.9375rem] font-semibold text-canvas transition-colors hover:bg-accent-strong"
+            >
+              Continue to placement preview
+              <ArrowRight aria-hidden="true" className="size-4" />
+            </Link>
+            <p id="placement-preview-note" className="mt-2 text-center text-xs text-muted">
+              Replay the recorded placement pipeline and inspect its approved output.
+            </p>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled
+              aria-describedby="placement-preview-note"
+              className="inline-flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-full border border-line-strong bg-white/[0.04] px-5 text-[0.9375rem] font-semibold text-muted"
+            >
+              <Lock aria-hidden="true" className="size-4" />
+              Continue to placement preview
+            </button>
+            <p id="placement-preview-note" className="mt-2 text-center text-xs text-muted">
+              Not built yet. Placement preview comes in a later build.
+            </p>
+          </>
+        )}
       </div>
     </section>
   );

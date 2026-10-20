@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -16,6 +16,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 const CHROME = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const ROOT = resolve(process.cwd());
 const HAS_SNAPSHOT = existsSync(join(ROOT, ".demo", "snapshot.json"));
+const HAS_FULL_SCENE = HAS_SNAPSHOT && Boolean((JSON.parse(readFileSync(join(ROOT, ".demo", "snapshot.json"), "utf8")) as { fullScene?: unknown }).fullScene);
 
 async function startServer(port: number, demoDir: string): Promise<ChildProcess> {
   assert.ok(existsSync(join(ROOT, ".next", "BUILD_ID")), "Run npm run build before the browser tests.");
@@ -57,7 +58,7 @@ describe("end-to-end demo (verified snapshot)", { skip: HAS_SNAPSHOT ? false : "
   it("tells the whole story in order, with every step present and correct", async () => {
     const { page } = await openDemo(browser, base);
     const steps = await page.locator('nav[aria-label="Demo steps"] a').allInnerTexts();
-    assert.deepEqual(steps, ["1. Case", "2. Agents", "3. Plan & scene", "4. Approved visuals", "5. Reactor", "6. Governor checks", "7. Human approval", "8. Masky", "9. LangSmith", "10. Reliability & security", "11. Business value"]);
+    assert.deepEqual(steps, ["1. Case", "2. Agents", "3. Plan & scene", "4. Approved visuals", "5. Reactor", "6. Governor checks", "7. Human approval", "8. Masky", "9. LangSmith", "10. Reliability & security", "11. Decision memory", "12. Business value"]);
     assert.equal(await page.getByTestId("case-id").innerText(), "NF-DEMO-0001");
     assert.equal(await page.getByTestId("case-status").innerText(), "approved");
     assert.equal(await page.getByTestId("agents").locator("h3").count(), 5);
@@ -98,6 +99,23 @@ describe("end-to-end demo (verified snapshot)", { skip: HAS_SNAPSHOT ? false : "
       (v: HTMLVideoElement) => new Promise<number>((ok) => (v.readyState >= 1 ? ok(v.duration) : v.addEventListener("loadedmetadata", () => ok(v.duration), { once: true }))),
     );
     assert.ok(Math.abs(duration - 3.5) < 0.05, `preview duration ${duration}`);
+    if (HAS_FULL_SCENE) {
+      assert.equal(await page.getByTestId("primary-video").getAttribute("data-primary"), "full-scene-v4");
+      assert.equal(await page.getByTestId("primary-video-label").innerText(), "Runway Aleph full-scene preview — human reviewed");
+      assert.equal(await page.getByTestId("full-scene-decision").innerText(), "approved-with-limitation");
+      assert.match(await page.getByTestId("full-scene-limitations").innerText(), /Fine generated cup lettering shows minor temporal instability during motion\./);
+      const full = page.getByTestId("media-full-scene-v4");
+      assert.equal(await full.evaluate((v: HTMLVideoElement) => v.loop || v.muted), false, "plays once, with its audio");
+      const fullDuration = await full.evaluate(
+        (v: HTMLVideoElement) => new Promise<number>((ok) => (v.readyState >= 1 ? ok(v.duration) : v.addEventListener("loadedmetadata", () => ok(v.duration), { once: true }))),
+      );
+      assert.ok(Math.abs(fullDuration - 20.04) < 0.05, `full-scene duration ${fullDuration}`);
+      const text = await page.getByTestId("primary-video").innerText();
+      assert.match(text, /not production-final/);
+      assert.doesNotMatch(text, /(?<!not )production-final/, "never claims production-final output");
+    } else {
+      assert.equal(await page.getByTestId("primary-video").getAttribute("data-primary"), "preview-v3");
+    }
     const audio = await page.request.get(`${base}/demo/media/iris-audio`);
     assert.deepEqual([audio.status(), audio.headers()["content-type"]], [200, "audio/mpeg"]);
     await page.close();
@@ -105,7 +123,7 @@ describe("end-to-end demo (verified snapshot)", { skip: HAS_SNAPSHOT ? false : "
 
   it("clicks through every step with the navigation and the Next buttons", async () => {
     const { page } = await openDemo(browser, base);
-    const ids = ["step-case", "step-workforce", "step-plan", "step-visuals", "step-reactor", "step-governor", "step-human", "step-masky", "step-langsmith", "step-reliability", "step-value"];
+    const ids = ["step-case", "step-workforce", "step-plan", "step-visuals", "step-reactor", "step-governor", "step-human", "step-masky", "step-langsmith", "step-reliability", "step-memory", "step-value"];
     for (const id of ids) {
       await page.locator(`nav[aria-label="Demo steps"] a[href="#${id}"]`).click();
       await page.waitForFunction((x) => location.hash === `#${x}`, id);
@@ -150,7 +168,7 @@ describe("end-to-end demo without a snapshot (graceful placeholders)", () => {
 
   it("shows the step navigation and a clear placeholder, and serves no media", async () => {
     const { page } = await openDemo(browser, base);
-    assert.equal(await page.locator('nav[aria-label="Demo steps"] a').count(), 11);
+    assert.equal(await page.locator('nav[aria-label="Demo steps"] a').count(), 12);
     assert.match(await page.getByLabel("Demo snapshot unavailable").innerText(), /not available[\s\S]*npm run demo/);
     assert.equal(await page.getByTestId("demo-story").count(), 0);
     assert.equal((await page.request.get(`${base}/demo/media/preview-v3`)).status(), 404);
