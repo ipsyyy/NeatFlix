@@ -10,6 +10,8 @@ import {
   useMemo,
   useRef,
   useState,
+  Suspense,
+  use,
   type ReactNode,
 } from "react";
 import {
@@ -19,9 +21,11 @@ import {
   getEligibility,
   sceneWorkspacePath,
 } from "@/lib/catalogue/eligibility";
+import { hasSourceVideo, type TitleMedia } from "@/lib/catalogue/title-media";
 import type { CatalogueTitle } from "@/lib/catalogue/types";
 import { StatusBadges } from "./status-badge";
 import { artworkShowsTitle, GateMarks, TitleArtwork } from "./title-artwork";
+import { TitleMediaPanel } from "./title-video";
 
 type TitleRecordContextValue = { open: (id: string) => void };
 
@@ -51,12 +55,17 @@ const processingLabel: Record<CatalogueTitle["processingStatus"], string> = {
   "not-processed": "Not processed",
 };
 
-/** Holds which title record is open, and renders the single shared dialog. */
+/**
+ * Holds which title record is open, and renders the single shared dialog.
+ * `media` is the server's un-awaited title media evidence; the dialog reads it.
+ */
 export function TitleRecordProvider({
   titles,
+  media,
   children,
 }: {
   titles: readonly CatalogueTitle[];
+  media: Promise<TitleMedia>;
   children: ReactNode;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -85,7 +94,7 @@ export function TitleRecordProvider({
         }}
         className="title-record m-auto w-[min(44rem,calc(100vw-2rem))] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-line-strong bg-surface p-0 text-ink shadow-[0_40px_120px_-20px_rgb(0_0_0/0.8)]"
       >
-        {selected && <TitleRecordBody title={selected} onClose={close} />}
+        {selected && <TitleRecordBody title={selected} media={media} onClose={close} />}
       </dialog>
     </TitleRecordContext.Provider>
   );
@@ -93,9 +102,11 @@ export function TitleRecordProvider({
 
 function TitleRecordBody({
   title,
+  media,
   onClose,
 }: {
   title: CatalogueTitle;
+  media: Promise<TitleMedia>;
   onClose: () => void;
 }) {
   const eligibility = getEligibility(title);
@@ -140,6 +151,12 @@ function TitleRecordBody({
 
         <EligibilityNote eligible={eligibility.eligible} reasons={eligibility.reasons} />
 
+        {hasSourceVideo(title.id) && (
+          <Suspense fallback={<p className="text-sm text-muted">Checking the title video…</p>}>
+            <TitleMediaSection title={title} media={media} />
+          </Suspense>
+        )}
+
         {canStartPlacementReview(title) && (
           <Link
             href={sceneWorkspacePath(title.id)}
@@ -167,7 +184,10 @@ function TitleRecordBody({
             value={<time dateTime={`PT${title.durationSeconds}S`} title={formatDurationLong(title.durationSeconds)}>{formatDuration(title.durationSeconds)}</time>}
           />
           <Field label="Generation pipeline" value={title.pipelineEnabled ? "Enabled" : "Not enabled"} />
-          <Field label="Video" value={title.videoUrl ?? "Not uploaded yet"} />
+          <Field
+            label="Video"
+            value={title.videoUrl ?? (hasSourceVideo(title.id) ? "Local demo source clip" : "Not uploaded yet")}
+          />
           <Field
             label="Artwork"
             value={title.artwork.kind === "placeholder" ? "Placeholder artwork" : "Original artwork"}
@@ -176,6 +196,10 @@ function TitleRecordBody({
       </div>
     </article>
   );
+}
+
+function TitleMediaSection({ title, media }: { title: CatalogueTitle; media: Promise<TitleMedia> }) {
+  return <TitleMediaPanel title={title} media={use(media)} />;
 }
 
 export function EligibilityNote({

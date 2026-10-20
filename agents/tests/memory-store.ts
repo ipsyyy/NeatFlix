@@ -87,6 +87,12 @@ export class MemoryWorkflowStore implements WorkflowStore {
         throw new IntegrityError("media_assets", "incomplete generated preview");
       }
     }
+    if (row.kind === "full-scene-video") {
+      const prov = row.provenance as Record<string, unknown> | null;
+      if (!row.plan_id || !row.generator || !row.model || !row.generated_at || row.latency_ms == null || row.cost_usd == null || row.duration_seconds == null || row.mime_type !== "video/mp4" || prov?.inputPlanId !== row.plan_id) {
+        throw new IntegrityError("media_assets", "incomplete full-scene video");
+      }
+    }
     this.media.set(row.asset_id, structuredClone({ ...row, created_at: this.now() }));
   }
 
@@ -172,7 +178,13 @@ export class MemoryWorkflowStore implements WorkflowStore {
     if (!asset || asset.case_id !== row.case_id) throw new IntegrityError("media_visual_reviews", "no asset with this asset_id and case_id");
     if (asset.checksum !== row.asset_checksum) throw new IntegrityError("media_visual_reviews", "review must name the asset's registered checksum");
     if (row.decision === "rejected" && row.reasons.length === 0) throw new IntegrityError("media_visual_reviews", "a rejection must state reasons");
-    this.visualReviews.set(row.asset_id, structuredClone({ ...row, created_at: this.now() }));
+    // Mirrors 20261019000000_full_scene_video_and_review_limitations.sql.
+    const limitations = row.limitations ?? [];
+    if (!["approved", "approved-with-limitation", "rejected"].includes(row.decision)) throw new IntegrityError("media_visual_reviews", "unknown decision");
+    if (limitations.length > 10 || (row.decision === "approved-with-limitation") !== limitations.length > 0) {
+      throw new IntegrityError("media_visual_reviews", "limitations are required exactly for approved-with-limitation");
+    }
+    this.visualReviews.set(row.asset_id, structuredClone({ ...row, limitations, created_at: this.now() }));
   }
 
   async getVisualReview(assetId: string): Promise<VisualReviewRow | null> {

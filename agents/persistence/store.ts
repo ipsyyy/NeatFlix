@@ -24,7 +24,7 @@ export type PlanRow = {
   created_at: string;
 };
 
-export const MEDIA_KINDS = ["source-video", "source-frame", "edited-still", "generated-preview"] as const;
+export const MEDIA_KINDS = ["source-video", "source-frame", "edited-still", "generated-preview", "full-scene-video"] as const;
 export type MediaKind = (typeof MEDIA_KINDS)[number];
 
 export type MediaAssetRow = {
@@ -77,13 +77,20 @@ export type ApprovalRow = {
   created_at: string;
 };
 
-/** A human visual review of one media asset (supabase/migrations/20261016050000_media_visual_reviews.sql). */
+export type VisualReviewDecision = "approved" | "approved-with-limitation" | "rejected";
+
+/**
+ * A human visual review of one media asset (supabase/migrations/20261016050000_media_visual_reviews.sql).
+ * Limitations are non-empty exactly when the decision is approved-with-limitation
+ * (20261019000000_full_scene_video_and_review_limitations.sql); earlier reviews read back with none.
+ */
 export type VisualReviewRow = {
   review_id: string;
   asset_id: string;
   case_id: string;
-  decision: "approved" | "rejected";
+  decision: VisualReviewDecision;
   reasons: string[];
+  limitations: string[];
   asset_checksum: string;
   reviewer_user_id: string;
   reviewer_name: string;
@@ -96,7 +103,8 @@ export type NewPlan = Omit<PlanRow, "created_at">;
 export type NewMediaAsset = Omit<MediaAssetRow, "created_at">;
 export type NewReview = Omit<ReviewRow, "created_at">;
 export type NewApproval = Omit<ApprovalRow, "created_at">;
-export type NewVisualReview = Omit<VisualReviewRow, "created_at">;
+/** Limitations are sent only when present, so other reviews insert unchanged before the migration. */
+export type NewVisualReview = Omit<VisualReviewRow, "created_at" | "limitations"> & { limitations?: string[] };
 
 /** A row with that primary or unique key already exists. Duplicates and replays are never overwritten. */
 export class DuplicateRecordError extends Error {

@@ -21,6 +21,8 @@
     "media:visual-review": "tsx agents/scripts/record-visual-review.ts",
     "media:motion-preview": "tsx agents/scripts/motion-preview.ts",
     "media:fallback-preview": "tsx agents/scripts/fallback-preview.ts",
+    "media:full-scene-edit": "tsx agents/scripts/full-scene-edit.ts",
+    "media:register-full-scene": "tsx agents/scripts/register-full-scene.ts",
     "agents:deliver-plan-v3": "tsx agents/scripts/deliver-plan-v3.ts",
     "agents:record-human-approval": "tsx agents/scripts/record-human-approval.ts",
     "agents:masky-identities": "tsx agents/scripts/masky-identities.ts",
@@ -30,7 +32,7 @@
     "demo:snapshot": "tsx agents/scripts/demo-snapshot.ts",
     "demo:verify": "tsx agents/scripts/demo-verify.ts",
     "demo": "npm run demo:snapshot && next build && next start --port 3000",
-    "test:e2e": "tsx --test e2e/demo.e2e.ts"
+    "test:e2e": "tsx --test e2e/demo.e2e.ts e2e/hero-preview.e2e.ts e2e/placement-preview.e2e.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
@@ -38,8 +40,9 @@
     "@band-ai/sdk": "^0.6.0",
     "@google/genai": "2.26.0",
     "@reactor-team/js-sdk": "3.1.0",
+    "@runwayml/sdk": "^4.22.0",
     "lucide-react": "^1.56.0",
-    "next": "16.4.0",
+    "next": "16.4.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "sharp": "0.35.5",
@@ -52,7 +55,7 @@
     "@types/react-dom": "^19",
     "esbuild": "0.28.2",
     "eslint": "^9",
-    "eslint-config-next": "16.4.0",
+    "eslint-config-next": "16.4.1",
     "playwright-core": "1.63.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",

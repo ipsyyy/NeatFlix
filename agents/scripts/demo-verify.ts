@@ -10,6 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { collectSecrets, loadLocalEnv } from "@/agents/config/env";
+import { describeFindings, envScanCandidates, KEY_PATTERNS, type ScanFinding } from "@/agents/security/secret-scan";
 
 const DIR = resolve(process.cwd(), ".demo");
 
@@ -28,16 +29,24 @@ results.push({ label: "Lint", ok: run("npm", ["run", "lint"]).ok, detail: "eslin
 results.push({ label: "Typecheck", ok: run("npm", ["run", "typecheck"]).ok, detail: "tsc --noEmit" });
 const audit = run("npm", ["audit", "--omit=dev", "--audit-level=high"]);
 results.push({ label: "Production dependency audit", ok: audit.ok, detail: /found 0 vulnerabilities/.test(audit.out) ? "0 production vulnerabilities" : "npm audit reported production findings" });
-const patterns = run("git", ["grep", "-nIE", "sb_secret_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{10,}|AIza[0-9A-Za-z_-]{30,}|mky_[A-Za-z0-9_-]{16,}|lsv2_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY", "--", ".", ":!agents/tests", ":!package-lock.json"]);
-const envValues = (() => {
+// Value-free findings: categories, variable names, and paths only.
+const findings: ScanFinding[] = [];
+for (const k of KEY_PATTERNS) {
+  const hits = run("git", ["grep", "-lIE", "-e", k.pattern, "--", ".", ":!agents/tests", ":!package-lock.json"]);
+  if (hits.out.trim()) findings.push({ kind: "key-pattern", category: k.category, paths: hits.out.trim().split("\n") });
+}
+const envCandidates = (() => {
   try {
-    return readFileSync(".env.local", "utf8").split("\n").map((l) => l.slice(l.indexOf("=") + 1).trim()).filter((v) => v.length >= 12 && !/^https?:\/\/|^(true|false)$/.test(v));
+    return envScanCandidates(readFileSync(".env.local", "utf8"));
   } catch {
-    return collectSecrets(process.env);
+    return collectSecrets(process.env).map((value) => ({ name: "configured secret", value }));
   }
 })();
-const leaked = envValues.filter((v) => run("git", ["grep", "-qF", "--", v]).ok).length;
-results.push({ label: "Secret scan of tracked files", ok: patterns.out.trim() === "" && leaked === 0, detail: leaked === 0 && patterns.out.trim() === "" ? "No key patterns outside test fixtures; no configured secret value is tracked" : "Secret material found in tracked files" });
+for (const c of envCandidates) {
+  const hits = run("git", ["grep", "-lF", "-e", c.value, "--"]);
+  if (hits.ok) findings.push({ kind: "configured-value", category: `configured ${c.name} value`, paths: hits.out.trim().split("\n") });
+}
+results.push({ label: "Secret scan of tracked files", ok: findings.length === 0, detail: describeFindings(findings) });
 mkdirSync(DIR, { recursive: true, mode: 0o700 });
 const commit = execFileSync("git", ["rev-parse", "--short", "HEAD"]).toString().trim();
 writeFileSync(join(DIR, "checks.json"), `${JSON.stringify({ ranAt: new Date().toISOString(), commit, results }, null, 2)}\n`, { mode: 0o600 });

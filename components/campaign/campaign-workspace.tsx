@@ -3,6 +3,7 @@ import type { CampaignMatch } from "@/lib/campaigns/matching";
 import type { Campaign } from "@/lib/campaigns/types";
 import type { CatalogueTitle } from "@/lib/catalogue/types";
 import type { SceneCandidate } from "@/lib/scenes/types";
+import { placementPreviewPath, recordedReplayFor } from "@/lib/placement/replay";
 import { CampaignBrief } from "./campaign-brief";
 import { CampaignSummary } from "./campaign-summary";
 import { Recommendation } from "./recommendation";
@@ -75,7 +76,14 @@ export function CampaignWorkspace({
           <CheckList label="Audience eligibility rules" rows={match.audienceRules} layout="stacked" />
         </section>
 
-        <CampaignSummary className="order-8 lg:order-none" caseId={caseId} scene={scene} campaign={campaign} match={match} />
+        <CampaignSummary
+          className="order-8 lg:order-none"
+          caseId={caseId}
+          scene={scene}
+          campaign={campaign}
+          match={match}
+          previewHref={recordedReplayFor(title.id, scene.id) ? placementPreviewPath(title.id, scene.id) : undefined}
+        />
       </div>
     </div>
   );

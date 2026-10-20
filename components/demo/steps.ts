@@ -10,5 +10,6 @@ export const DEMO_STEPS = [
   { id: "step-masky", short: "Masky" },
   { id: "step-langsmith", short: "LangSmith" },
   { id: "step-reliability", short: "Reliability & security" },
+  { id: "step-memory", short: "Decision memory" },
   { id: "step-value", short: "Business value" },
 ] as const;
